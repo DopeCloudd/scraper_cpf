@@ -1,0 +1,66 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model TrainingCenter {
+  id                  Int        @id @default(autoincrement())
+  externalId          String?    @unique
+  name                String
+  address             String?
+  city                String?
+  postalCode          String?
+  region              String?
+  country             String?    @default("FR")
+  latitude            Float?
+  longitude           Float?
+  email               String?
+  phone               String?
+  website             String?
+  contactUrl          String?
+  notes               String?
+  lastListScrapedAt   DateTime?
+  lastDetailScrapedAt DateTime?
+  createdAt           DateTime   @default(now())
+  updatedAt           DateTime   @updatedAt
+  trainings           Training[]
+
+  @@index([name])
+  @@index([city])
+}
+
+model Training {
+  id                  Int              @id @default(autoincrement())
+  centerId            Int
+  center              TrainingCenter   @relation(fields: [centerId], references: [id])
+  externalId          String?          @unique
+  title               String
+  detailUrl           String           @unique
+  summary             String?
+  modality            String?
+  certification       String?
+  locationText        String?
+  region              String?
+  priceText           String?
+  priceValue          Decimal?         @db.Decimal(10, 2)
+  durationText        String?
+  durationHours       Int?
+  startDate           DateTime?
+  endDate             DateTime?
+  searchQuery         String?
+  needsDetail         Boolean          @default(true)
+  listPageData        Json?
+  detailPageData      Json?
+  lastListScrapedAt   DateTime?
+  lastDetailScrapedAt DateTime?
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @updatedAt
+
+  @@index([centerId])
+  @@index([needsDetail])
+  @@index([lastDetailScrapedAt])
+}
