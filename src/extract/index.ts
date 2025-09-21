@@ -1,4 +1,4 @@
-import type { Browser, HTTPResponse, Page } from 'puppeteer';
+import type { Browser, Page } from 'puppeteer';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../db/prisma';
 import { appConfig } from '../config/appConfig';
@@ -12,6 +12,33 @@ const RESULTS_BASE_URL =
   'https://www.moncompteformation.gouv.fr/espace-prive/html/#/formation/recherche/resultats?q=';
 const DETAIL_BASE_URL =
   'https://www.moncompteformation.gouv.fr/espace-prive/html/#/formation/fiche/';
+
+const extractDetailPath = (link?: string | null): string | undefined => {
+  if (!link) return undefined;
+  let candidate = link;
+  try {
+    const url = new URL(link, 'https://www.moncompteformation.gouv.fr/');
+    candidate = url.hash ? url.hash.slice(1) : url.pathname;
+  } catch {
+    // ignore relative URL parsing errors
+  }
+
+  candidate = candidate.replace(/^#/u, '').replace(/^\/+/, '');
+  if (!candidate.startsWith('formation/')) return undefined;
+  candidate = candidate.replace(/^formation\/(?:recherche|fiche)\//, '');
+  candidate = candidate.split('?')[0];
+  return candidate || undefined;
+};
+
+const buildDetailUrl = (pathValue?: string | null): string | undefined => {
+  if (!pathValue) return undefined;
+  const segments = String(pathValue)
+    .split('/')
+    .filter(Boolean)
+    .map((segment) => encodeURIComponent(segment));
+  if (segments.length === 0) return undefined;
+  return `${DETAIL_BASE_URL}${segments.join('/')}`;
+};
 
 type JsonRecord = Record<string, unknown>;
 
@@ -59,6 +86,7 @@ const identifyItemKey = (item: JsonRecord): string => {
     'detailUrl',
     'url',
     'urlFiche',
+    'trainingCardId',
   ];
 
   for (const key of possibleKeys) {
@@ -133,8 +161,9 @@ const normalizeListItem = (item: JsonRecord): NormalizedListItem => {
     | JsonRecord
     | undefined;
   const localisation = (item.lieuFormation ?? item.localisation) as JsonRecord | undefined;
-  const detailUrlCandidate = pickString(
+  const rawDetailHref = pickString(
     item.detailUrl,
+    item.detailHref,
     item.urlDetail,
     item.url,
     item.urlFiche,
@@ -148,20 +177,28 @@ const normalizeListItem = (item: JsonRecord): NormalizedListItem => {
     item.numeroFormation,
     item.code,
     item.codeFormation,
-    item.numeroAction
+    item.numeroAction,
+    item.trainingCardId
   );
 
-  const detailUrl = detailUrlCandidate ?? (trainingId ? `${DETAIL_BASE_URL}${trainingId}` : undefined);
+  const detailPath = pickString(
+    extractDetailPath(rawDetailHref),
+    item.trainingCardId,
+    trainingId
+  );
 
-  const priceValue = pickNumber(item.prix, item.prixMinimum, item.prixMin, item.cout);
-  const durationHours = pickNumber(item.dureeHeures, item.duree, item.dureeTotale);
+  const detailUrl = buildDetailUrl(detailPath) ?? rawDetailHref;
+
+  const priceValue = pickNumber(item.prix, item.prixMinimum, item.prixMin, item.cout, item.prixTexte, item.priceText);
+  const durationHours = pickNumber(item.dureeHeures, item.duree, item.dureeTotale, item.durationText);
 
   const centerName = pickString(
     organisme?.libelle,
     organisme?.nom,
     organisme?.raisonSociale,
     item.nomOrganisme,
-    item.organisme
+    item.organisme,
+    item.centerName
   );
 
   return {
@@ -170,11 +207,12 @@ const normalizeListItem = (item: JsonRecord): NormalizedListItem => {
       item.idFormation,
       item.numeroOffre,
       item.codeFormation,
-      item.numeroAction
+      item.numeroAction,
+      item.trainingCardId
     ),
     title: pickString(item.libelleFormation, item.libelle, item.titre, item.title),
     detailUrl,
-    summary: pickString(item.resume, item.descriptionCourte, item.description),
+    summary: pickString(item.resume, item.descriptionCourte, item.description, item.summary),
     modality: pickString(item.modalite, item.modality, item.modalites, item.modaliteLibelle),
     certification: pickString(item.certification, item.certificationLibelle),
     locationText: pickString(
@@ -182,12 +220,13 @@ const normalizeListItem = (item: JsonRecord): NormalizedListItem => {
       localisation?.ville,
       item.localisation,
       item.ville,
-      item.adresse
+      item.adresse,
+      item.locationText
     ),
     region: pickString(localisation?.region, item.region),
-    priceText: pickString(item.prixTexte, item.prixAffiche, item.coutAffiche),
+    priceText: pickString(item.prixTexte, item.prixAffiche, item.coutAffiche, item.priceText),
     priceValue,
-    durationText: pickString(item.dureeTexte, item.duree, item.dureeAffiche),
+    durationText: pickString(item.dureeTexte, item.duree, item.dureeAffiche, item.durationText),
     durationHours: durationHours ? Math.round(durationHours) : undefined,
     listPageData: item as Prisma.InputJsonValue,
     centerName,
@@ -204,38 +243,6 @@ const normalizeListItem = (item: JsonRecord): NormalizedListItem => {
 };
 
 const collectPageData = async (page: Page, url: string): Promise<ExtractedPage> => {
-  const aggregated = new Map<string, JsonRecord>();
-  let totalResults: number | undefined;
-
-  const responseHandler = async (response: HTTPResponse) => {
-    try {
-      const request = response.request();
-      if (!['xhr', 'fetch'].includes(request.resourceType())) return;
-
-      const headers = response.headers();
-      const contentType = headers['content-type'] ?? headers['Content-Type'];
-      if (!contentType || !contentType.includes('application/json')) return;
-
-      const payload = await response.json();
-      const { items, totalResults: payloadTotal } = extractItemsFromPayload(payload);
-      if (payloadTotal && !Number.isNaN(payloadTotal)) {
-        totalResults = payloadTotal;
-      }
-
-      for (const raw of items) {
-        if (!raw || typeof raw !== 'object') continue;
-        const key = identifyItemKey(raw as JsonRecord);
-        if (!aggregated.has(key)) {
-          aggregated.set(key, raw as JsonRecord);
-        }
-      }
-    } catch (error) {
-      logger.debug('collectPageData: erreur parsing réponse %s', (error as Error).message);
-    }
-  };
-
-  page.on('response', responseHandler);
-
   try {
     await page.goto(url, {
       waitUntil: 'networkidle2',
@@ -245,11 +252,61 @@ const collectPageData = async (page: Page, url: string): Promise<ExtractedPage> 
     logger.warn('Échec navigation vers %s : %s', url, (error as Error).message);
   }
 
+  try {
+    await page.waitForSelector('#result-list-container mcf-dsfr-formation-carte', {
+      timeout: appConfig.navigationTimeoutMs,
+    });
+  } catch (error) {
+    logger.warn("Aucun résultat trouvé pour l'URL %s : %s", url, (error as Error).message);
+  }
+
   await page.waitForTimeout(Math.ceil(randomBetween(appConfig.minWaitMs, appConfig.maxWaitMs)));
 
-  page.off('response', responseHandler);
+  const items = (await page.evaluate(() => {
+    const cleanText = (value: string | null | undefined) =>
+      value ? value.replace(/\s+/g, ' ').trim() : undefined;
 
-  return { items: Array.from(aggregated.values()), totalResults };
+    const getIconText = (card: Element, iconClass: string) => {
+      const icon = card.querySelector(`.${iconClass}`);
+      if (!icon || !icon.parentElement) return undefined;
+      return cleanText(icon.parentElement.textContent);
+    };
+
+    const container = document.querySelector('#result-list-container');
+    if (!container) return [] as Array<Record<string, unknown>>;
+
+    const cards = Array.from(container.querySelectorAll('mcf-dsfr-formation-carte'));
+    return cards.map((card) => {
+      const titleLink = card.querySelector('h3 a');
+      const centerLine = card.querySelector('.form-carte__sous-titre');
+      const summary = card.querySelector('.form-carte__certification p');
+      const absoluteHref = (titleLink as HTMLAnchorElement | null)?.href ?? undefined;
+      const rawHref = titleLink?.getAttribute('href') ?? undefined;
+      const rawId = (card as HTMLElement | null)?.id || undefined;
+
+      const priceText = getIconText(card, 'fr-icon-money-euro-circle-line');
+      const durationText = getIconText(card, 'fr-icon-time-line');
+      const locationText = getIconText(card, 'fr-icon-map-pin-2-line');
+
+      const centerNameRaw = cleanText(centerLine?.textContent ?? undefined);
+      const centerName = centerNameRaw?.replace(/^Proposée par\s*/i, '').trim() || centerNameRaw;
+
+      return {
+        title: cleanText(titleLink?.textContent ?? undefined),
+        detailUrl: absoluteHref,
+        detailHref: rawHref,
+        trainingCardId: rawId,
+        summary: cleanText(summary?.textContent ?? undefined),
+        centerName,
+        priceText,
+        durationText,
+        locationText,
+        outerHTML: (card as HTMLElement).outerHTML,
+      };
+    });
+  })) as JsonRecord[];
+
+  return { items, totalResults: items.length };
 };
 
 const ensureCenter = async (item: NormalizedListItem) => {
@@ -366,7 +423,7 @@ const processQuery = async (browser: Browser, query: SearchQuery) => {
   await page.setRequestInterception(true);
   page.on('request', (request) => {
     const resourceType = request.resourceType();
-    if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
+    if (['image', 'media', 'font'].includes(resourceType)) {
       request.abort().catch(() => undefined);
       return;
     }
