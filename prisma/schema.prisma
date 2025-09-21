@@ -11,7 +11,7 @@ model TrainingCenter {
   id                  Int        @id @default(autoincrement())
   externalId          String?    @unique
   name                String
-  normalizedName      String
+  normalizedName      String      @default("")
   address             String?
   city                String?
   postalCode          String?
