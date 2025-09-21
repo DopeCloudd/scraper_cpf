@@ -11,6 +11,7 @@ model TrainingCenter {
   id                  Int        @id @default(autoincrement())
   externalId          String?    @unique
   name                String
+  normalizedName      String
   address             String?
   city                String?
   postalCode          String?
@@ -30,6 +31,7 @@ model TrainingCenter {
   trainings           Training[]
 
   @@index([name])
+  @@index([normalizedName])
   @@index([city])
 }
 

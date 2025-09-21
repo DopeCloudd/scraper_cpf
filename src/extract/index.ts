@@ -7,6 +7,7 @@ import { createBrowser } from '../scraper/browser';
 import { humanDelay, randomBetween } from '../utils/humanizer';
 import { logger } from '../utils/logger';
 import { randomUserAgent } from '../utils/userAgent';
+import { normalizeCenterName, sanitizeCity, sanitizeCountry, sanitizePostalCode, sanitizeRegion } from '../utils/center';
 
 const RESULTS_BASE_URL =
   'https://www.moncompteformation.gouv.fr/espace-prive/html/#/formation/recherche/resultats?q=';
@@ -263,13 +264,36 @@ const collectPageData = async (page: Page, url: string): Promise<ExtractedPage> 
   await page.waitForTimeout(Math.ceil(randomBetween(appConfig.minWaitMs, appConfig.maxWaitMs)));
 
   const items = (await page.evaluate(() => {
-    const cleanText = (value: string | null | undefined) =>
-      value ? value.replace(/\s+/g, ' ').trim() : undefined;
+    const cleanText = (value: string | null | undefined) => {
+      if (!value) return undefined;
+      const normalized = value.replace(/ | /g, ' ').replace(/\s+/g, ' ').trim();
+      return normalized.length > 0 ? normalized : undefined;
+    };
 
     const getIconText = (card: Element, iconClass: string) => {
       const icon = card.querySelector(`.${iconClass}`);
-      if (!icon || !icon.parentElement) return undefined;
-      return cleanText(icon.parentElement.textContent);
+      if (!icon) return undefined;
+      const listItem = icon.closest('li');
+      if (!listItem) return undefined;
+
+      const parts = Array.from(listItem.childNodes)
+        .map((node) => {
+          if (node.nodeType === Node.TEXT_NODE) {
+            return node.textContent ?? '';
+          }
+
+          if (node instanceof HTMLElement) {
+            if (node.classList.contains(iconClass) || node.classList.contains('fr-sr-only')) {
+              return '';
+            }
+            return node.textContent ?? '';
+          }
+
+          return '';
+        })
+        .filter((snippet) => snippet && snippet.trim().length > 0);
+
+      return cleanText(parts.join(' '));
     };
 
     const container = document.querySelector('#result-list-container');
@@ -313,42 +337,63 @@ const ensureCenter = async (item: NormalizedListItem) => {
   const name = item.centerName?.trim();
   if (!name) return null;
 
-  const baseData = {
+  const normalizedName = normalizeCenterName(name);
+  if (!normalizedName) {
+    logger.warn('Nom de centre impossible à normaliser: %s', name);
+    return null;
+  }
+
+  const now = new Date();
+  const city = sanitizeCity(item.centerCity);
+  const postalCode = sanitizePostalCode(item.centerPostalCode);
+  const region = sanitizeRegion(item.centerRegion);
+  const country = sanitizeCountry(item.centerCountry) ?? 'FR';
+
+  const createData: Prisma.TrainingCenterCreateInput = {
     name,
-    city: item.centerCity,
-    postalCode: item.centerPostalCode,
-    region: item.centerRegion,
-    country: item.centerCountry,
-    lastListScrapedAt: new Date(),
+    normalizedName,
+    country,
+    lastListScrapedAt: now,
+    ...(city ? { city } : {}),
+    ...(postalCode ? { postalCode } : {}),
+    ...(region ? { region } : {}),
   };
+
+  const updateData: Prisma.TrainingCenterUpdateInput = {
+    name,
+    normalizedName,
+    lastListScrapedAt: now,
+  };
+
+  if (city) updateData.city = city;
+  if (postalCode) updateData.postalCode = postalCode;
+  if (region) updateData.region = region;
+  if (country) updateData.country = country;
 
   if (item.centerExternalId) {
     return prisma.trainingCenter.upsert({
       where: { externalId: item.centerExternalId },
-      update: baseData,
+      update: updateData,
       create: {
-        ...baseData,
+        ...createData,
         externalId: item.centerExternalId,
       },
     });
   }
 
   const existing = await prisma.trainingCenter.findFirst({
-    where: {
-      name,
-      city: item.centerCity ?? undefined,
-    },
+    where: { normalizedName },
   });
 
   if (existing) {
     return prisma.trainingCenter.update({
       where: { id: existing.id },
-      data: baseData,
+      data: updateData,
     });
   }
 
   return prisma.trainingCenter.create({
-    data: baseData,
+    data: createData,
   });
 };
 
