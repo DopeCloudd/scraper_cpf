@@ -12,6 +12,13 @@ model TrainingCenter {
   externalId          String?    @unique
   name                String
   normalizedName      String      @default("")
+  siren              String?
+  siret              String?
+  declaredTrainees   Int?
+  delegatedTrainees  Int?
+  declaredTrainers   Int?
+  openDataUpdatedAt  DateTime?
+  openDataPayload    Json?
   address             String?
   city                String?
   postalCode          String?
@@ -32,6 +39,7 @@ model TrainingCenter {
 
   @@index([name])
   @@index([normalizedName])
+  @@index([siren])
   @@index([city])
 }
 

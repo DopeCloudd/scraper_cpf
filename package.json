@@ -12,10 +12,12 @@
     "format": "prettier --write \"src/**/*.ts\"",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
-    "enrich": "ts-node src/enrich/index.ts"
+    "enrich": "ts-node src/enrich/index.ts",
+    "sync:opendata": "ts-node src/sync/opendata.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.16.2",
+    "axios": "^1.12.2",
     "dotenv": "^16.3.1",
     "puppeteer": "^21.0.0",
     "puppeteer-extra": "^3.3.6",
