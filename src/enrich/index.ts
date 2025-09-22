@@ -43,35 +43,68 @@ const selectTrainingFields = {
 } satisfies Record<string, boolean>;
 
 const extractContacts = async (page: Page): Promise<ContactsInfo> => {
-  const contacts = await page.$$eval(
-    'a[href^="mailto:"], a[href^="tel:"], a[href^="http"]',
-    (anchors) => {
-      const info: ContactsInfo = {};
+  const contacts = await page.evaluate(() => {
+    const cleanText = (value?: string | null): string | undefined => value?.trim() || undefined;
 
-      for (const anchor of anchors) {
-        const href = (anchor as HTMLAnchorElement).href;
-        if (!href) continue;
-        if (href.startsWith("mailto:") && !info.email) {
-          info.email = href.replace("mailto:", "").trim();
-          continue;
-        }
-        if (href.startsWith("tel:") && !info.phone) {
-          info.phone = href.replace("tel:", "").trim();
-          continue;
-        }
-        if (!info.website && href.startsWith("http")) {
-          const url = new URL(href);
-          if (!["moncompteformation.gouv.fr"].includes(url.hostname)) {
-            info.website = href;
-          }
+    const liElements = Array.from(document.querySelectorAll("li"));
+
+    const phoneLi = liElements.find((li) => li.querySelector('span[class*="fr-icon-phone"]'));
+    let phone: string | undefined;
+    if (phoneLi) {
+      const phoneAnchor = phoneLi.querySelector('a[href^="tel:"]') as HTMLAnchorElement | null;
+      if (phoneAnchor?.href) {
+        phone = phoneAnchor.href.replace(/^tel:/i, "").trim();
+      } else {
+        const phoneText = phoneLi.textContent ?? "";
+        const phoneMatch = phoneText.match(/(?:\+?\d[\d\s.\-]{5,})/);
+        if (phoneMatch) {
+          phone = phoneMatch[0].replace(/[^\d+]/g, "");
+        } else if (phoneText) {
+          phone = phoneText.replace(/Téléphone\s*(fixe|portable)?\s*:\s*/i, "").trim();
         }
       }
-
-      return info;
     }
-  );
 
-  return contacts ?? {};
+    const emailLi = liElements.find((li) => li.querySelector('span[class*="fr-icon-mail"]'));
+    let email: string | undefined;
+    if (emailLi) {
+      const emailAnchor = emailLi.querySelector('a[href^="mailto:"]') as HTMLAnchorElement | null;
+      if (emailAnchor?.href) {
+        email = emailAnchor.href.replace(/^mailto:/i, "").trim();
+      } else {
+        const emailText = cleanText(emailLi.textContent);
+        if (emailText && /[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/.test(emailText)) {
+          email = emailText;
+        }
+      }
+    }
+
+    let website: string | undefined;
+    const headings = Array.from(document.querySelectorAll("h3"));
+    const siteHeading = headings.find((heading) => heading.textContent?.toLowerCase().includes("site internet"));
+    if (siteHeading) {
+      const next = siteHeading.nextElementSibling as HTMLElement | null;
+      if (next?.tagName === "A") {
+        const websiteAnchor = next as HTMLAnchorElement;
+        if (websiteAnchor.href) {
+          website = websiteAnchor.href.trim();
+        }
+      } else {
+        const anchorInside = next?.querySelector('a[href^="http"]') as HTMLAnchorElement | null;
+        if (anchorInside?.href) {
+          website = anchorInside.href.trim();
+        }
+      }
+    }
+
+    return { phone, email, website };
+  });
+
+  return {
+    email: contacts?.email,
+    phone: contacts?.phone,
+    website: contacts?.website,
+  };
 };
 
 const pickText = async (
