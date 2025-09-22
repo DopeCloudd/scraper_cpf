@@ -1,4 +1,4 @@
-import { prisma } from '../db/prisma';
+import { prisma } from "../db/prisma";
 
 async function clearTables() {
   try {
@@ -9,10 +9,10 @@ async function clearTables() {
       return { trainings, centers };
     });
 
-    console.log(`Deleted ${trainings.count} trainings.`);
-    console.log(`Deleted ${centers.count} training centers.`);
+    console.log(`[DB] Suppression de ${trainings.count} formation.`);
+    console.log(`[DB] Suppression de ${centers.count} centres de formation.`);
   } catch (error) {
-    console.error('Failed to clear tables:', error);
+    console.error("[DB] Erreur lors de la suppression des tables : ", error);
     process.exitCode = 1;
   } finally {
     await prisma.$disconnect();
