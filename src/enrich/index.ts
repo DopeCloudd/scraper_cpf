@@ -1,14 +1,14 @@
-import type { Page } from 'puppeteer';
-import { Prisma } from '@prisma/client';
-import { prisma } from '../db/prisma';
-import { createBrowser } from '../scraper/browser';
-import { appConfig } from '../config/appConfig';
-import { humanDelay, randomBetween } from '../utils/humanizer';
-import { logger } from '../utils/logger';
-import { randomUserAgent } from '../utils/userAgent';
+import { Prisma } from "@prisma/client";
+import type { Page } from "puppeteer";
+import { appConfig } from "../config/appConfig";
+import { prisma } from "../db/prisma";
+import { createBrowser } from "../scraper/browser";
+import { humanDelay, randomBetween } from "../utils/humanizer";
+import { logger } from "../utils/logger";
+import { randomUserAgent } from "../utils/userAgent";
 
 const DETAIL_BASE_URL =
-  'https://www.moncompteformation.gouv.fr/espace-prive/html/#/formation/fiche/';
+  "https://www.moncompteformation.gouv.fr/espace-prive/html/#/formation/recherche/";
 
 interface ContactsInfo {
   email?: string;
@@ -43,37 +43,45 @@ const selectTrainingFields = {
 } satisfies Record<string, boolean>;
 
 const extractContacts = async (page: Page): Promise<ContactsInfo> => {
-  const contacts = await page.$$eval('a[href^="mailto:"], a[href^="tel:"], a[href^="http"]', (anchors) => {
-    const info: ContactsInfo = {};
+  const contacts = await page.$$eval(
+    'a[href^="mailto:"], a[href^="tel:"], a[href^="http"]',
+    (anchors) => {
+      const info: ContactsInfo = {};
 
-    for (const anchor of anchors) {
-      const href = (anchor as HTMLAnchorElement).href;
-      if (!href) continue;
-      if (href.startsWith('mailto:') && !info.email) {
-        info.email = href.replace('mailto:', '').trim();
-        continue;
-      }
-      if (href.startsWith('tel:') && !info.phone) {
-        info.phone = href.replace('tel:', '').trim();
-        continue;
-      }
-      if (!info.website && href.startsWith('http')) {
-        const url = new URL(href);
-        if (!['moncompteformation.gouv.fr'].includes(url.hostname)) {
-          info.website = href;
+      for (const anchor of anchors) {
+        const href = (anchor as HTMLAnchorElement).href;
+        if (!href) continue;
+        if (href.startsWith("mailto:") && !info.email) {
+          info.email = href.replace("mailto:", "").trim();
+          continue;
+        }
+        if (href.startsWith("tel:") && !info.phone) {
+          info.phone = href.replace("tel:", "").trim();
+          continue;
+        }
+        if (!info.website && href.startsWith("http")) {
+          const url = new URL(href);
+          if (!["moncompteformation.gouv.fr"].includes(url.hostname)) {
+            info.website = href;
+          }
         }
       }
-    }
 
-    return info;
-  });
+      return info;
+    }
+  );
 
   return contacts ?? {};
 };
 
-const pickText = async (page: Page, selectors: string[]): Promise<string | undefined> => {
+const pickText = async (
+  page: Page,
+  selectors: string[]
+): Promise<string | undefined> => {
   for (const selector of selectors) {
-    const text = await page.$eval(selector, (element) => element.textContent?.trim() || undefined).catch(() => undefined);
+    const text = await page
+      .$eval(selector, (element) => element.textContent?.trim() || undefined)
+      .catch(() => undefined);
     if (text) return text;
   }
   return undefined;
@@ -81,7 +89,7 @@ const pickText = async (page: Page, selectors: string[]): Promise<string | undef
 
 const toNumber = (value?: string | null): number | undefined => {
   if (!value) return undefined;
-  const normalized = value.replace(/[^0-9.,-]/g, '').replace(',', '.');
+  const normalized = value.replace(/[^0-9.,-]/g, "").replace(",", ".");
   const parsed = Number(normalized);
   return Number.isFinite(parsed) ? parsed : undefined;
 };
@@ -90,27 +98,27 @@ const parseDetailPage = async (page: Page): Promise<ParsedDetailData> => {
   const [priceText, durationText, addressBlock, summary] = await Promise.all([
     pickText(page, [
       '[data-test="price"]',
-      '.formation__price',
-      '.resume__price',
-      '.info-prix',
+      ".formation__price",
+      ".resume__price",
+      ".info-prix",
     ]),
     pickText(page, [
       '[data-test="duration"]',
-      '.formation__duration',
-      '.resume__duration',
-      '.info-duree',
+      ".formation__duration",
+      ".resume__duration",
+      ".info-duree",
     ]),
     pickText(page, [
       '[data-test="organisme-adresse"]',
-      '.organisme__address',
-      '.formation__adresse',
-      '.organisme-block .adresse',
+      ".organisme__address",
+      ".formation__adresse",
+      ".organisme-block .adresse",
     ]),
     pickText(page, [
       '[data-test="resume"]',
-      '.resume__description',
-      '.formation__description',
-      '.bloc-description',
+      ".resume__description",
+      ".formation__description",
+      ".bloc-description",
     ]),
   ]);
 
@@ -119,8 +127,14 @@ const parseDetailPage = async (page: Page): Promise<ParsedDetailData> => {
   const detailJson = await page.evaluate(() => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const globals: Record<string, any> = {};
-    const scripts = Array.from(document.querySelectorAll('script[type="application/json"], script[type="application/ld+json"]'));
-    const datasets = scripts.map((script) => script.textContent).filter(Boolean);
+    const scripts = Array.from(
+      document.querySelectorAll(
+        'script[type="application/json"], script[type="application/ld+json"]'
+      )
+    );
+    const datasets = scripts
+      .map((script) => script.textContent)
+      .filter(Boolean);
     if (datasets.length > 0) {
       return datasets;
     }
@@ -138,7 +152,10 @@ const parseDetailPage = async (page: Page): Promise<ParsedDetailData> => {
   let country: string | undefined;
 
   if (addressBlock) {
-    const parts = addressBlock.split(/\n|,/).map((part) => part.trim()).filter(Boolean);
+    const parts = addressBlock
+      .split(/\n|,/)
+      .map((part) => part.trim())
+      .filter(Boolean);
     for (const part of parts) {
       const postalMatch = part.match(/(\d{5})/);
       if (postalMatch) {
@@ -151,7 +168,7 @@ const parseDetailPage = async (page: Page): Promise<ParsedDetailData> => {
       }
 
       if (/France/i.test(part)) {
-        country = 'FR';
+        country = "FR";
         continue;
       }
 
@@ -182,7 +199,7 @@ const parseDetailPage = async (page: Page): Promise<ParsedDetailData> => {
 };
 
 const updateCenterInfo = async (centerId: number, parsed: ParsedDetailData) => {
-  const centerUpdates: Prisma.TrainingCenterUpdateArgs['data'] = {
+  const centerUpdates: Prisma.TrainingCenterUpdateArgs["data"] = {
     lastDetailScrapedAt: new Date(),
   };
 
@@ -201,19 +218,22 @@ const updateCenterInfo = async (centerId: number, parsed: ParsedDetailData) => {
   });
 };
 
-const processTraining = async (page: Page, trainingId: number): Promise<boolean> => {
+const processTraining = async (
+  page: Page,
+  trainingId: number
+): Promise<boolean> => {
   const training = await prisma.training.findUnique({
     where: { id: trainingId },
     select: selectTrainingFields,
   });
 
   if (!training) {
-    logger.warn('Formation %d introuvable', trainingId);
+    logger.warn("Formation %d introuvable", trainingId);
     return false;
   }
 
   if (!training.detailUrl) {
-    logger.warn('Formation %d sans URL détail', trainingId);
+    logger.warn("Formation %d sans URL détail", trainingId);
     await prisma.training.update({
       where: { id: trainingId },
       data: { needsDetail: false },
@@ -221,7 +241,7 @@ const processTraining = async (page: Page, trainingId: number): Promise<boolean>
     return false;
   }
 
-  const detailUrl = training.detailUrl.startsWith('http')
+  const detailUrl = training.detailUrl.startsWith("http")
     ? training.detailUrl
     : `${DETAIL_BASE_URL}${training.detailUrl}`;
 
@@ -230,26 +250,33 @@ const processTraining = async (page: Page, trainingId: number): Promise<boolean>
   try {
     await page.setUserAgent(randomUserAgent());
     await page.goto(detailUrl, {
-      waitUntil: 'networkidle2',
+      waitUntil: "networkidle2",
       timeout: appConfig.navigationTimeoutMs,
     });
 
-    await page.waitForTimeout(Math.ceil(randomBetween(appConfig.minWaitMs, appConfig.maxWaitMs)));
+    await page.waitForTimeout(
+      Math.ceil(randomBetween(appConfig.minWaitMs, appConfig.maxWaitMs))
+    );
 
     parseResult = await parseDetailPage(page);
   } catch (error) {
-    logger.error('Erreur chargement fiche %d (%s): %s', trainingId, detailUrl, (error as Error).message);
+    logger.error(
+      "Erreur chargement fiche %d (%s): %s",
+      trainingId,
+      detailUrl,
+      (error as Error).message
+    );
     return false;
   }
 
   if (!parseResult) {
-    logger.warn('Parse détail vide pour formation %d', trainingId);
+    logger.warn("Parse détail vide pour formation %d", trainingId);
     return false;
   }
 
   await prisma.$transaction(async (tx) => {
     const priceDecimal =
-      typeof parseResult?.priceValue === 'number'
+      typeof parseResult?.priceValue === "number"
         ? new Prisma.Decimal(parseResult.priceValue.toFixed(2))
         : undefined;
 
@@ -281,7 +308,7 @@ export const runEnrichment = async () => {
 
   await page.setDefaultNavigationTimeout(appConfig.navigationTimeoutMs);
   await page.setExtraHTTPHeaders({
-    'Accept-Language': 'fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7',
+    "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
   });
 
   let processed = 0;
@@ -292,11 +319,11 @@ export const runEnrichment = async () => {
       const training = await prisma.training.findFirst({
         where: { needsDetail: true },
         select: { id: true },
-        orderBy: [{ lastDetailScrapedAt: 'asc' }, { id: 'asc' }],
+        orderBy: [{ lastDetailScrapedAt: "asc" }, { id: "asc" }],
       });
 
       if (!training) {
-        logger.info('Aucune formation à enrichir.');
+        logger.info("Aucune formation à enrichir.");
         break;
       }
 
@@ -304,7 +331,9 @@ export const runEnrichment = async () => {
       processed += 1;
       if (result) {
         success += 1;
-        await humanDelay(randomBetween(appConfig.minWaitMs, appConfig.maxWaitMs));
+        await humanDelay(
+          randomBetween(appConfig.minWaitMs, appConfig.maxWaitMs)
+        );
       } else {
         await prisma.training.update({
           where: { id: training.id },
@@ -316,7 +345,11 @@ export const runEnrichment = async () => {
       }
     }
 
-    logger.info('Enrichissement terminé: %d traité(s), %d succès', processed, success);
+    logger.info(
+      "Enrichissement terminé: %d traité(s), %d succès",
+      processed,
+      success
+    );
   } finally {
     await page.close();
     await browser.close();
@@ -326,7 +359,7 @@ export const runEnrichment = async () => {
 
 if (require.main === module) {
   runEnrichment().catch((error) => {
-    logger.error('Enrichissement échoué: %s', (error as Error).message);
+    logger.error("Enrichissement échoué: %s", (error as Error).message);
     process.exitCode = 1;
     void prisma.$disconnect();
   });
