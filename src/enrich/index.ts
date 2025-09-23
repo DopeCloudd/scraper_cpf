@@ -44,14 +44,19 @@ const selectTrainingFields = {
 
 const extractContacts = async (page: Page): Promise<ContactsInfo> => {
   const contacts = await page.evaluate(() => {
-    const cleanText = (value?: string | null): string | undefined => value?.trim() || undefined;
+    const cleanText = (value?: string | null): string | undefined =>
+      value?.trim() || undefined;
 
     const liElements = Array.from(document.querySelectorAll("li"));
 
-    const phoneLi = liElements.find((li) => li.querySelector('span[class*="fr-icon-phone"]'));
+    const phoneLi = liElements.find((li) =>
+      li.querySelector('span[class*="fr-icon-phone"]')
+    );
     let phone: string | undefined;
     if (phoneLi) {
-      const phoneAnchor = phoneLi.querySelector('a[href^="tel:"]') as HTMLAnchorElement | null;
+      const phoneAnchor = phoneLi.querySelector(
+        'a[href^="tel:"]'
+      ) as HTMLAnchorElement | null;
       if (phoneAnchor?.href) {
         phone = phoneAnchor.href.replace(/^tel:/i, "").trim();
       } else {
@@ -60,15 +65,21 @@ const extractContacts = async (page: Page): Promise<ContactsInfo> => {
         if (phoneMatch) {
           phone = phoneMatch[0].replace(/[^\d+]/g, "");
         } else if (phoneText) {
-          phone = phoneText.replace(/Téléphone\s*(fixe|portable)?\s*:\s*/i, "").trim();
+          phone = phoneText
+            .replace(/Téléphone\s*(fixe|portable)?\s*:\s*/i, "")
+            .trim();
         }
       }
     }
 
-    const emailLi = liElements.find((li) => li.querySelector('span[class*="fr-icon-mail"]'));
+    const emailLi = liElements.find((li) =>
+      li.querySelector('span[class*="fr-icon-mail"]')
+    );
     let email: string | undefined;
     if (emailLi) {
-      const emailAnchor = emailLi.querySelector('a[href^="mailto:"]') as HTMLAnchorElement | null;
+      const emailAnchor = emailLi.querySelector(
+        'a[href^="mailto:"]'
+      ) as HTMLAnchorElement | null;
       if (emailAnchor?.href) {
         email = emailAnchor.href.replace(/^mailto:/i, "").trim();
       } else {
@@ -81,7 +92,9 @@ const extractContacts = async (page: Page): Promise<ContactsInfo> => {
 
     let website: string | undefined;
     const headings = Array.from(document.querySelectorAll("h3"));
-    const siteHeading = headings.find((heading) => heading.textContent?.toLowerCase().includes("site internet"));
+    const siteHeading = headings.find((heading) =>
+      heading.textContent?.toLowerCase().includes("site internet")
+    );
     if (siteHeading) {
       const next = siteHeading.nextElementSibling as HTMLElement | null;
       if (next?.tagName === "A") {
@@ -90,7 +103,9 @@ const extractContacts = async (page: Page): Promise<ContactsInfo> => {
           website = websiteAnchor.href.trim();
         }
       } else {
-        const anchorInside = next?.querySelector('a[href^="http"]') as HTMLAnchorElement | null;
+        const anchorInside = next?.querySelector(
+          'a[href^="http"]'
+        ) as HTMLAnchorElement | null;
         if (anchorInside?.href) {
           website = anchorInside.href.trim();
         }
@@ -129,24 +144,9 @@ const toNumber = (value?: string | null): number | undefined => {
 
 const parseDetailPage = async (page: Page): Promise<ParsedDetailData> => {
   const [priceText, durationText, addressBlock, summary] = await Promise.all([
-    pickText(page, [
-      '[data-test="price"]',
-      ".formation__price",
-      ".resume__price",
-      ".info-prix",
-    ]),
-    pickText(page, [
-      '[data-test="duration"]',
-      ".formation__duration",
-      ".resume__duration",
-      ".info-duree",
-    ]),
-    pickText(page, [
-      '[data-test="organisme-adresse"]',
-      ".organisme__address",
-      ".formation__adresse",
-      ".organisme-block .adresse",
-    ]),
+    pickText(page, ["li.bloc-info.prix .soustitre"]),
+    pickText(page, ["li.bloc-info .soustitre.dureeRythme"]),
+    pickText(page, ["li.bloc-info.localisation .soustitre"]),
     pickText(page, [
       '[data-test="resume"]',
       ".resume__description",
