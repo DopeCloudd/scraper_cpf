@@ -1,10 +1,10 @@
-import axios from 'axios';
-import { Prisma } from '@prisma/client';
-import { prisma } from '../db/prisma';
-import { logger } from '../utils/logger';
-import { normalizeCenterName } from '../utils/center';
-import { appConfig } from '../config/appConfig';
-import { humanDelay, randomBetween } from '../utils/humanizer';
+import { Prisma } from "@prisma/client";
+import axios from "axios";
+import { appConfig } from "../config/appConfig";
+import { prisma } from "../db/prisma";
+import { normalizeCenterName } from "../utils/center";
+import { humanDelay, randomBetween } from "../utils/humanizer";
+import { logger } from "../utils/logger";
 
 type Nullable<T> = T | null | undefined;
 
@@ -28,8 +28,8 @@ type OpenDataResponse = {
   records?: OpenDataRecord[];
 };
 
-const API_URL = 'https://dgefp.opendatasoft.com/api/records/1.0/search/';
-const DATASET = 'liste-publique-des-of-v2';
+const API_URL = "https://dgefp.opendatasoft.com/api/records/1.0/search/";
+const DATASET = "liste-publique-des-of-v2";
 
 const MAX_RESULTS = Number(process.env.OPENDATA_ROWS ?? 10);
 const MAX_RETRIES = Number(process.env.OPENDATA_RETRIES ?? 2);
@@ -40,34 +40,58 @@ const normalize = (value: Nullable<string>): string | undefined => {
   return trimmed.length > 0 ? trimmed : undefined;
 };
 
+/**
+ * Tente d'abord un match strict via refine.denomination,
+ * puis un fallback en recherche large (q=) uniquement pour récupérer des candidats,
+ * mais sans auto-sélection s'il n'y a pas de match exact ensuite.
+ */
 const fetchRecords = async (name: string): Promise<OpenDataRecord[]> => {
-  const params = {
-    dataset: DATASET,
-    q: name,
-    rows: MAX_RESULTS,
-    sort: '-informationsdeclarees_datedernieredeclaration',
-  };
+  const base = { dataset: DATASET, rows: MAX_RESULTS };
 
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt += 1) {
-    try {
-      const { data } = await axios.get<OpenDataResponse>(API_URL, { params });
-      return data.records ?? [];
-    } catch (error) {
-      const delayMs = Math.ceil(randomBetween(appConfig.minWaitMs, appConfig.maxWaitMs));
-      logger.warn(
-        'Erreur requête OpenDataSoft (tentative %d/%d): %s',
-        attempt + 1,
-        MAX_RETRIES + 1,
-        (error as Error).message
-      );
-      if (attempt >= MAX_RETRIES) throw error;
-      await humanDelay(delayMs);
+  const attempts: Array<Record<string, unknown>> = [
+    // 1) Match strict sur la dénomination
+    { ...base, ["refine.denomination"]: name },
+    // 2) Fallback : recherche large (toujours triée par date de dernière déclaration)
+    {
+      ...base,
+      q: name,
+      sort: "-informationsdeclarees_datedernieredeclaration",
+    },
+  ];
+
+  for (const params of attempts) {
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt += 1) {
+      try {
+        const { data } = await axios.get<OpenDataResponse>(API_URL, { params });
+        const recs = data.records ?? [];
+        if (recs.length > 0) return recs;
+        // Aucun résultat pour cet essai de paramètres -> on passe au bloc suivant
+        break;
+      } catch (error) {
+        const delayMs = Math.ceil(
+          randomBetween(appConfig.minWaitMs, appConfig.maxWaitMs)
+        );
+        logger.warn(
+          "Erreur requête OpenDataSoft (tentative %d/%d) [%s]: %s",
+          attempt + 1,
+          MAX_RETRIES + 1,
+          JSON.stringify(params),
+          (error as Error).message
+        );
+        if (attempt >= MAX_RETRIES) throw error;
+        await humanDelay(delayMs);
+      }
     }
   }
 
   return [];
 };
 
+/**
+ * Ne retourne qu'un enregistrement dont la denomination
+ * correspond EXACTEMENT (après normalisation) au nom du centre.
+ * Pas de fallback permissif.
+ */
 const pickBestRecord = (
   centerName: string,
   records: OpenDataRecord[]
@@ -81,21 +105,30 @@ const pickBestRecord = (
     return normalizedDenomination === normalizedTarget;
   });
 
-  if (exactMatches.length > 0) {
-    return exactMatches[0];
+  if (exactMatches.length > 1) {
+    exactMatches.sort((a, b) => {
+      const da = a.fields.informationsdeclarees_datedernieredeclaration ?? "";
+      const db = b.fields.informationsdeclarees_datedernieredeclaration ?? "";
+      // tri décroissant (le plus récent d'abord)
+      return db.localeCompare(da);
+    });
   }
 
-  return records[0];
+  return exactMatches[0]; // undefined s'il n'y a pas de match exact
 };
 
-const updateCenterWithRecord = async (centerId: number, record: OpenDataRecord) => {
+const updateCenterWithRecord = async (
+  centerId: number,
+  record: OpenDataRecord
+) => {
   const payload = record.fields;
 
   const updateData: Prisma.TrainingCenterUpdateInput = {
     siren: payload.siren ?? null,
     siret: payload.siretetablissementdeclarant ?? null,
     declaredTrainees: payload.informationsdeclarees_nbstagiaires ?? null,
-    delegatedTrainees: payload.informationsdeclarees_nbstagiairesconfiesparunautreof ?? null,
+    delegatedTrainees:
+      payload.informationsdeclarees_nbstagiairesconfiesparunautreof ?? null,
     declaredTrainers: payload.informationsdeclarees_effectifformateurs ?? null,
     openDataPayload: payload as Prisma.InputJsonValue,
     openDataUpdatedAt: new Date(),
@@ -117,31 +150,34 @@ export const syncOpenData = async () => {
         { declaredTrainers: null },
       ],
     },
-    orderBy: { id: 'asc' },
+    orderBy: { id: "asc" },
   });
 
   if (centers.length === 0) {
-    logger.info('Aucun centre à synchroniser.');
+    logger.info("Aucun centre à synchroniser.");
     await prisma.$disconnect();
     return;
   }
 
-  logger.info('Synchronisation OpenData pour %d centre(s)', centers.length);
+  logger.info("Synchronisation OpenData pour %d centre(s)", centers.length);
 
   for (const center of centers) {
     const searchName = normalize(center.name) ?? center.name;
-    logger.info('Recherche OpenData pour %s (#%d)', searchName, center.id);
+    logger.info("Recherche OpenData pour %s (#%d)", searchName, center.id);
 
     try {
       const records = await fetchRecords(searchName);
       if (records.length === 0) {
-        logger.warn('Aucun enregistrement OpenData trouvé pour %s', searchName);
+        logger.warn("Aucun enregistrement OpenData trouvé pour %s", searchName);
         continue;
       }
 
       const bestMatch = pickBestRecord(center.name, records);
       if (!bestMatch) {
-        logger.warn('Pas de correspondance valide pour %s', searchName);
+        logger.warn(
+          'Pas de correspondance EXACTE pour "%s" — centre ignoré',
+          searchName
+        );
         continue;
       }
 
@@ -149,7 +185,7 @@ export const syncOpenData = async () => {
       await humanDelay(randomBetween(appConfig.minWaitMs, appConfig.maxWaitMs));
     } catch (error) {
       logger.error(
-        'Erreur synchronisation OpenData pour %s: %s',
+        "Erreur synchronisation OpenData pour %s: %s",
         searchName,
         (error as Error).message
       );
@@ -162,10 +198,13 @@ export const syncOpenData = async () => {
 if (require.main === module) {
   syncOpenData()
     .then(() => {
-      logger.info('Synchronisation OpenData terminée');
+      logger.info("Synchronisation OpenData terminée");
     })
     .catch((error) => {
-      logger.error('Synchronisation OpenData échouée: %s', (error as Error).message);
+      logger.error(
+        "Synchronisation OpenData échouée: %s",
+        (error as Error).message
+      );
       process.exitCode = 1;
     });
 }
