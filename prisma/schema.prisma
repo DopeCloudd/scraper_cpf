@@ -28,7 +28,7 @@ model TrainingCenter {
   longitude           Float?
   email               String?
   phone               String?
-  website             String?
+  website             String? @db.VarChar(255)
   contactUrl          String?
   notes               String?
   lastListScrapedAt   DateTime?
