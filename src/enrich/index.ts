@@ -143,16 +143,10 @@ const toNumber = (value?: string | null): number | undefined => {
 };
 
 const parseDetailPage = async (page: Page): Promise<ParsedDetailData> => {
-  const [priceText, durationText, addressBlock, summary] = await Promise.all([
+  const [priceText, durationText, addressBlock] = await Promise.all([
     pickText(page, ["li.bloc-info.prix .soustitre"]),
     pickText(page, ["li.bloc-info .soustitre.dureeRythme"]),
     pickText(page, ["li.bloc-info.localisation .soustitre"]),
-    pickText(page, [
-      '[data-test="resume"]',
-      ".resume__description",
-      ".formation__description",
-      ".bloc-description",
-    ]),
   ]);
 
   const contacts = await extractContacts(page);
@@ -226,7 +220,6 @@ const parseDetailPage = async (page: Page): Promise<ParsedDetailData> => {
     postalCode,
     region,
     country,
-    summary,
     raw: detailJson as Prisma.InputJsonValue,
   };
 };
