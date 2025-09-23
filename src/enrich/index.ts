@@ -170,7 +170,8 @@ const parseDetailPage = async (page: Page): Promise<ParsedDetailData> => {
     return globals;
   });
 
-  const priceValue = toNumber(priceText ?? contacts.email ?? undefined);
+  // NOTE: on parse uniquement le prix (pas d’email ici)
+  const priceValue = toNumber(priceText);
   const durationValue = toNumber(durationText);
 
   let city: string | undefined;
@@ -341,7 +342,12 @@ export const runEnrichment = async () => {
   let success = 0;
 
   try {
-    while (processed < appConfig.detailBatchSize) {
+    // 🔓 Boucle sans limite : on s'arrête uniquement quand il n'y a plus de needsDetail
+    // (ou en cas d'erreur qui vide la file)
+    // Si tu veux un garde-fou, ajoute un max itérations optionnel.
+    // for (;;) { ... }
+    // Ici, on utilise while(true) pour rester explicite.
+    while (true) {
       const training = await prisma.training.findFirst({
         where: { needsDetail: true },
         select: { id: true },
@@ -355,6 +361,7 @@ export const runEnrichment = async () => {
 
       const result = await processTraining(page, training.id);
       processed += 1;
+
       if (result) {
         success += 1;
         await humanDelay(
