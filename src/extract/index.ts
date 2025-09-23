@@ -71,11 +71,7 @@ type NormalizedListItem = {
   centerCountry?: string;
 };
 
-type ExtractedPage = {
-  items: JsonRecord[];
-  totalResults?: number;
-};
-
+/** Construit l’URL de recherche initiale (sans pagination par offset) */
 const buildSearchUrl = (payload: JsonRecord): string => {
   const json = JSON.stringify(payload);
   return `${RESULTS_BASE_URL}${encodeURIComponent(json)}`;
@@ -107,39 +103,6 @@ const identifyItemKey = (item: JsonRecord): string => {
   }
 
   return JSON.stringify(item);
-};
-
-const extractItemsFromPayload = (payload: unknown): ExtractedPage => {
-  if (!payload || typeof payload !== "object") {
-    return { items: [] };
-  }
-
-  if (Array.isArray(payload)) {
-    return { items: payload as JsonRecord[] };
-  }
-
-  const candidates = [
-    "resultats",
-    "listeResultats",
-    "results",
-    "items",
-    "formations",
-    "hits",
-  ];
-
-  for (const key of candidates) {
-    const value = (payload as JsonRecord)[key];
-    if (Array.isArray(value)) {
-      const totalKey =
-        "total" in payload ? (payload as JsonRecord)["total"] : undefined;
-      return {
-        items: value as JsonRecord[],
-        totalResults: typeof totalKey === "number" ? totalKey : undefined,
-      };
-    }
-  }
-
-  return { items: [] };
 };
 
 const pickString = (...values: unknown[]): string | undefined => {
@@ -292,42 +255,33 @@ const normalizeListItem = (item: JsonRecord): NormalizedListItem => {
   };
 };
 
-const collectPageData = async (
-  page: Page,
-  url: string
-): Promise<ExtractedPage> => {
-  try {
-    await page.goto(url, {
-      waitUntil: "networkidle2",
+/* --------------------------- Helpers DOM côté page --------------------------- */
+
+/** Attend la présence d’au moins 1 carte de résultat */
+const waitForResults = async (page: Page) => {
+  await page.waitForSelector(
+    "#result-list-container mcf-dsfr-formation-carte",
+    {
       timeout: appConfig.navigationTimeoutMs,
-    });
-  } catch (error) {
-    logger.warn("Échec navigation vers %s : %s", url, (error as Error).message);
-  }
-
-  try {
-    await page.waitForSelector(
-      "#result-list-container mcf-dsfr-formation-carte",
-      {
-        timeout: appConfig.navigationTimeoutMs,
-      }
-    );
-  } catch (error) {
-    logger.warn(
-      "Aucun résultat trouvé pour l'URL %s : %s",
-      url,
-      (error as Error).message
-    );
-  }
-
-  await page.waitForTimeout(
-    Math.ceil(randomBetween(appConfig.minWaitMs, appConfig.maxWaitMs))
+    }
   );
+};
 
+/** Récupère le nombre actuel de cartes */
+const getCardsCount = async (page: Page): Promise<number> => {
+  return page.evaluate(() => {
+    const container = document.querySelector("#result-list-container");
+    if (!container) return 0;
+    return container.querySelectorAll("mcf-dsfr-formation-carte").length;
+  });
+};
+
+/** Mappe une carte -> objet brut (même logique que précédemment) */
+const mapAllCardsToItems = async (page: Page): Promise<JsonRecord[]> => {
   const items = (await page.evaluate(() => {
     const cleanText = (value: string | null | undefined) => {
       if (!value) return undefined;
-      const normalized = value.replace(/ | /g, " ").replace(/\s+/g, " ").trim();
+      const normalized = value.replace(/ | /g, " ").replace(/\s+/g, " ").trim();
       return normalized.length > 0 ? normalized : undefined;
     };
 
@@ -342,7 +296,6 @@ const collectPageData = async (
           if (node.nodeType === Node.TEXT_NODE) {
             return node.textContent ?? "";
           }
-
           if (node instanceof HTMLElement) {
             if (
               node.classList.contains(iconClass) ||
@@ -352,7 +305,6 @@ const collectPageData = async (
             }
             return node.textContent ?? "";
           }
-
           return "";
         })
         .filter((snippet) => snippet && snippet.trim().length > 0);
@@ -398,8 +350,70 @@ const collectPageData = async (
     });
   })) as JsonRecord[];
 
-  return { items, totalResults: items.length };
+  return items;
 };
+
+/**
+ * Extrait uniquement les N derniers items (les "nouveaux") à partir d’un compteur précédent.
+ * Exemple: prevCount=10 → retourne les cartes [10..19] (jusqu’à N=10).
+ */
+const extractNewBatch = async (
+  page: Page,
+  prevCount: number,
+  batchSize = 10
+): Promise<JsonRecord[]> => {
+  const items = await mapAllCardsToItems(page);
+  const total = items.length;
+  if (total <= prevCount) return [];
+  const start = prevCount;
+  const end = Math.min(prevCount + batchSize, total);
+  return items.slice(start, end);
+};
+
+/** Clique sur “Afficher plus de résultats” s’il est présent */
+const clickLoadMoreIfPresent = async (
+  page: Page,
+  prevCount: number
+): Promise<boolean> => {
+  // Sélecteur le plus stable: l’attribut aria-describedby et le style DSFR
+  const btnSelector =
+    'button[aria-describedby="affichage-courant-formations"].fr-btn--tertiary';
+
+  const isPresent = await page.$(btnSelector);
+  if (!isPresent) return false;
+
+  await page.click(btnSelector).catch(() => undefined);
+
+  // Attendre que le nombre de cartes augmente (nouveaux 10 résultats)
+  try {
+    await page.waitForFunction(
+      (selector, before) => {
+        const container = document.querySelector("#result-list-container");
+        if (!container) return false;
+        const count = container.querySelectorAll(
+          "mcf-dsfr-formation-carte"
+        ).length;
+        // On veut strictly greater than prevCount
+        return count > before;
+      },
+      { timeout: appConfig.navigationTimeoutMs },
+      btnSelector,
+      prevCount
+    );
+  } catch {
+    // Si ça n’augmente pas, on considérera qu’il n’y a plus de résultats
+    return false;
+  }
+
+  // Petit délai humain
+  await page.waitForTimeout(
+    Math.ceil(randomBetween(appConfig.minWaitMs, appConfig.maxWaitMs))
+  );
+
+  return true;
+};
+
+/* --------------------------------- Persist --------------------------------- */
 
 const ensureCenter = async (item: NormalizedListItem) => {
   const name = item.centerName?.trim();
@@ -531,6 +545,8 @@ const persistListItem = async (
   });
 };
 
+/* ----------------------------- Process par query ---------------------------- */
+
 const processQuery = async (browser: Browser, query: SearchQuery) => {
   const page = await browser.newPage();
   await page.setDefaultNavigationTimeout(appConfig.navigationTimeoutMs);
@@ -546,52 +562,97 @@ const processQuery = async (browser: Browser, query: SearchQuery) => {
       request.abort().catch(() => undefined);
       return;
     }
-
     request.continue().catch(() => undefined);
   });
 
   const basePayload = JSON.parse(JSON.stringify(query.payload)) as JsonRecord;
-  const perPage =
-    typeof basePayload.nombreOccurences === "number"
-      ? basePayload.nombreOccurences
-      : appConfig.itemsPerPage;
 
   const processedKeys = new Set<string>();
-  let pageIndex = 0;
+  let prevCount = 0; // nombre de cartes déjà traitées
   let totalSaved = 0;
+  let batchIndex = 0;
 
   try {
-    while (pageIndex < appConfig.maxPagesPerQuery) {
-      const offset = pageIndex * perPage;
-      const payload = {
-        ...basePayload,
-        debutPagination: offset + 1,
-        nombreOccurences: perPage,
-      };
+    // 1) Navigation initiale
+    const url = buildSearchUrl(basePayload);
+    logger.info("Extraction liste %s — page initiale via %s", query.name, url);
 
-      const url = buildSearchUrl(payload);
-      logger.info(
-        "Extraction liste %s — page %d via %s",
-        query.name,
-        pageIndex + 1,
-        url
+    try {
+      await page.goto(url, {
+        waitUntil: "networkidle2",
+        timeout: appConfig.navigationTimeoutMs,
+      });
+    } catch (error) {
+      logger.warn(
+        "Échec navigation vers %s : %s",
+        url,
+        (error as Error).message
       );
-      const { items } = await collectPageData(page, url);
+    }
 
-      if (items.length === 0) {
-        logger.info(
-          "Aucun résultat supplémentaire pour %s après %d pages",
-          query.name,
-          pageIndex + 1
-        );
-        break;
+    await waitForResults(page);
+    await page.waitForTimeout(
+      Math.ceil(randomBetween(appConfig.minWaitMs, appConfig.maxWaitMs))
+    );
+
+    while (batchIndex < appConfig.maxPagesPerQuery) {
+      // 2) Extraire uniquement les 10 "nouveaux" résultats
+      const rawNewItems = await extractNewBatch(page, prevCount, 10);
+
+      if (rawNewItems.length === 0) {
+        // Si pas de nouveaux items, tenter un clic "Afficher plus de résultats"
+        const clicked = await clickLoadMoreIfPresent(page, prevCount);
+        if (!clicked) {
+          logger.info(
+            "Fin atteinte (bouton absent ou plus de nouveaux résultats) pour %s",
+            query.name
+          );
+          break;
+        }
+
+        // Après le clic, tenter à nouveau d’extraire les nouveaux
+        const retriedNew = await extractNewBatch(page, prevCount, 10);
+        if (retriedNew.length === 0) {
+          logger.info(
+            "Aucun nouvel item après clic pour %s — arrêt",
+            query.name
+          );
+          break;
+        }
+
+        // Traiter ces nouveaux items
+        for (const raw of retriedNew) {
+          const key = identifyItemKey(raw);
+          if (processedKeys.has(key)) continue;
+          processedKeys.add(key);
+
+          const normalized = normalizeListItem(raw);
+          normalized.listPageData = raw as Prisma.InputJsonValue;
+
+          try {
+            await persistListItem(normalized, query);
+            totalSaved += 1;
+          } catch (error) {
+            logger.error(
+              "Échec sauvegarde formation: %s",
+              (error as Error).message,
+              { detailUrl: normalized.detailUrl }
+            );
+          }
+        }
+
+        prevCount += retriedNew.length;
+        batchIndex += 1;
+
+        // Préparer l’éventuel prochain tour
+        // (le clic suivant se fera en début de boucle si nécessaire)
+        continue;
       }
 
-      for (const raw of items) {
+      // 3) Traiter les nouveaux items détectés sans cliquer (premier lot initial)
+      for (const raw of rawNewItems) {
         const key = identifyItemKey(raw);
-        if (processedKeys.has(key)) {
-          continue;
-        }
+        if (processedKeys.has(key)) continue;
         processedKeys.add(key);
 
         const normalized = normalizeListItem(raw);
@@ -604,21 +665,24 @@ const processQuery = async (browser: Browser, query: SearchQuery) => {
           logger.error(
             "Échec sauvegarde formation: %s",
             (error as Error).message,
-            {
-              detailUrl: normalized.detailUrl,
-            }
+            { detailUrl: normalized.detailUrl }
           );
         }
       }
 
-      pageIndex += 1;
+      prevCount += rawNewItems.length;
+      batchIndex += 1;
 
-      if (items.length < perPage) {
-        logger.info("Dernière page atteinte pour %s", query.name);
+      // 4) Clic pour charger 10 de plus pour la prochaine itération
+      const clicked = await clickLoadMoreIfPresent(page, prevCount);
+      if (!clicked) {
+        logger.info(
+          "Fin atteinte (bouton absent) pour %s après %d lots",
+          query.name,
+          batchIndex
+        );
         break;
       }
-
-      await humanDelay(randomBetween(appConfig.minWaitMs, appConfig.maxWaitMs));
     }
 
     logger.info(
