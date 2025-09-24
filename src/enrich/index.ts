@@ -142,6 +142,40 @@ const toNumber = (value?: string | null): number | undefined => {
   return Number.isFinite(parsed) ? parsed : undefined;
 };
 
+// Fonction pour valider et tronquer les URLs si nécessaire
+const validateWebsiteUrl = (url?: string): string | undefined => {
+  if (!url) return undefined;
+
+  const trimmedUrl = url.trim();
+  if (!trimmedUrl) return undefined;
+
+  // Limite de la colonne database
+  const MAX_LENGTH = 255;
+
+  if (trimmedUrl.length <= MAX_LENGTH) {
+    return trimmedUrl;
+  }
+
+  // Si l'URL est trop longue, on essaie de la raccourcir intelligemment
+  // en gardant le domaine principal et en supprimant les paramètres
+  try {
+    const urlObj = new URL(
+      trimmedUrl.startsWith("http") ? trimmedUrl : `https://${trimmedUrl}`
+    );
+    const cleanUrl = `${urlObj.protocol}//${urlObj.hostname}${urlObj.pathname}`;
+
+    if (cleanUrl.length <= MAX_LENGTH) {
+      return cleanUrl;
+    }
+
+    // Si même la version nettoyée est trop longue, on tronque
+    return cleanUrl.substring(0, MAX_LENGTH);
+  } catch {
+    // Si l'URL n'est pas valide, on tronque simplement
+    return trimmedUrl.substring(0, MAX_LENGTH);
+  }
+};
+
 const parseDetailPage = async (page: Page): Promise<ParsedDetailData> => {
   const [priceText, durationText, addressBlock] = await Promise.all([
     pickText(page, ["li.bloc-info.prix .soustitre"]),
@@ -169,6 +203,18 @@ const parseDetailPage = async (page: Page): Promise<ParsedDetailData> => {
     globals.dataset = (window as unknown as Record<string, unknown>).dataset;
     return globals;
   });
+
+  // Ajouter les contacts extraits aux données JSON pour conservation complète
+  const enrichedDetailJson = {
+    ...detailJson,
+    extractedContacts: contacts,
+    extractedData: {
+      priceText,
+      durationText,
+      addressBlock,
+      timestamp: new Date().toISOString(),
+    },
+  };
 
   // NOTE: on parse uniquement le prix (pas d’email ici)
   const priceValue = toNumber(priceText);
@@ -221,7 +267,7 @@ const parseDetailPage = async (page: Page): Promise<ParsedDetailData> => {
     postalCode,
     region,
     country,
-    raw: detailJson as Prisma.InputJsonValue,
+    raw: enrichedDetailJson as Prisma.InputJsonValue,
   };
 };
 
@@ -237,12 +283,65 @@ const updateCenterInfo = async (centerId: number, parsed: ParsedDetailData) => {
   if (parsed.country) centerUpdates.country = parsed.country;
   if (parsed.contacts.email) centerUpdates.email = parsed.contacts.email;
   if (parsed.contacts.phone) centerUpdates.phone = parsed.contacts.phone;
-  if (parsed.contacts.website) centerUpdates.website = parsed.contacts.website;
 
-  await prisma.trainingCenter.update({
-    where: { id: centerId },
-    data: centerUpdates,
-  });
+  // Valider et tronquer l'URL du site web si nécessaire
+  const validatedWebsite = validateWebsiteUrl(parsed.contacts.website);
+  if (validatedWebsite) {
+    centerUpdates.website = validatedWebsite;
+
+    // Log si l'URL a été tronquée
+    if (parsed.contacts.website && parsed.contacts.website.length > 255) {
+      logger.warn(
+        "URL du site web tronquée pour le centre %d (original: %d chars, tronquée: %d chars)",
+        centerId,
+        parsed.contacts.website.length,
+        validatedWebsite.length
+      );
+    }
+  }
+
+  try {
+    await prisma.trainingCenter.update({
+      where: { id: centerId },
+      data: centerUpdates,
+    });
+  } catch (error) {
+    logger.error(
+      "Erreur mise à jour centre %d: %s",
+      centerId,
+      error instanceof Error ? error.message : String(error)
+    );
+
+    // En cas d'erreur, on essaie une mise à jour sans le website
+    if (centerUpdates.website) {
+      logger.info(
+        "Nouvelle tentative de mise à jour du centre %d sans le website",
+        centerId
+      );
+      const { website, ...updatesWithoutWebsite } = centerUpdates;
+      try {
+        await prisma.trainingCenter.update({
+          where: { id: centerId },
+          data: updatesWithoutWebsite,
+        });
+        logger.info(
+          "Mise à jour du centre %d réussie sans le website",
+          centerId
+        );
+      } catch (fallbackError) {
+        logger.error(
+          "Erreur mise à jour centre %d même sans website: %s",
+          centerId,
+          fallbackError instanceof Error
+            ? fallbackError.message
+            : String(fallbackError)
+        );
+        throw fallbackError;
+      }
+    } else {
+      throw error;
+    }
+  }
 };
 
 const processTraining = async (
@@ -301,30 +400,64 @@ const processTraining = async (
     return false;
   }
 
-  await prisma.$transaction(async (tx) => {
-    const priceDecimal =
-      typeof parseResult?.priceValue === "number"
-        ? new Prisma.Decimal(parseResult.priceValue.toFixed(2))
-        : undefined;
+  try {
+    await prisma.$transaction(async (tx) => {
+      const priceDecimal =
+        typeof parseResult?.priceValue === "number"
+          ? new Prisma.Decimal(parseResult.priceValue.toFixed(2))
+          : undefined;
 
-    await tx.training.update({
-      where: { id: trainingId },
-      data: {
-        priceText: parseResult?.priceText ?? undefined,
-        priceValue: priceDecimal,
-        durationText: parseResult?.durationText ?? undefined,
-        durationHours: parseResult?.durationHours ?? undefined,
-        summary: parseResult?.summary ?? undefined,
-        detailPageData: parseResult?.raw,
-        needsDetail: false,
-        lastDetailScrapedAt: new Date(),
-      },
+      await tx.training.update({
+        where: { id: trainingId },
+        data: {
+          priceText: parseResult?.priceText ?? undefined,
+          priceValue: priceDecimal,
+          durationText: parseResult?.durationText ?? undefined,
+          durationHours: parseResult?.durationHours ?? undefined,
+          summary: parseResult?.summary ?? undefined,
+          detailPageData: parseResult?.raw,
+          needsDetail: false,
+          lastDetailScrapedAt: new Date(),
+        },
+      });
+
+      if (parseResult) {
+        await updateCenterInfo(training.centerId, parseResult);
+      }
     });
+  } catch (dbError) {
+    logger.error(
+      "Erreur transaction BDD pour formation %d: %s",
+      trainingId,
+      dbError instanceof Error ? dbError.message : String(dbError)
+    );
 
-    if (parseResult) {
-      await updateCenterInfo(training.centerId, parseResult);
+    // En cas d'erreur de transaction, on essaie au moins de marquer comme traité
+    try {
+      await prisma.training.update({
+        where: { id: trainingId },
+        data: {
+          needsDetail: false,
+          lastDetailScrapedAt: new Date(),
+        },
+      });
+      logger.info(
+        "Formation %d marquée comme traitée malgré l'erreur",
+        trainingId
+      );
+    } catch (fallbackError) {
+      logger.error(
+        "Impossible de marquer la formation %d comme traitée: %s",
+        trainingId,
+        fallbackError instanceof Error
+          ? fallbackError.message
+          : String(fallbackError)
+      );
+      return false;
     }
-  });
+
+    return false;
+  }
 
   return true;
 };
