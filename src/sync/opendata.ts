@@ -34,11 +34,72 @@ const DATASET = "liste-publique-des-of-v2";
 const MAX_RESULTS = Number(process.env.OPENDATA_ROWS ?? 10);
 const MAX_RETRIES = Number(process.env.OPENDATA_RETRIES ?? 2);
 
+/* ----------------------------- Normalisation ----------------------------- */
+
 const normalize = (value: Nullable<string>): string | undefined => {
   if (!value) return undefined;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
 };
+
+const removeAccents = (s: string) =>
+  s.normalize("NFD").replace(/\p{Diacritic}/gu, "");
+
+const cleanSpaces = (s: string) => s.replace(/\s+/g, " ").trim();
+
+const CIVILITY_TOKENS = [
+  "madame",
+  "monsieur",
+  "mme",
+  "mlle",
+  "melle",
+  "m.",
+  "mr",
+  "m",
+];
+
+const isCivility = (token: string) =>
+  CIVILITY_TOKENS.includes(token.toLowerCase());
+
+/** Retourne tokens NOM/PRENOM sans civilités, accents/ponctuations, lowercased */
+const nameTokens = (s: string): string[] => {
+  const base = cleanSpaces(removeAccents(s).replace(/[.,;:()'"]/g, " "));
+  return base
+    .split(/[\s-]+/)
+    .map((t) => t.toLowerCase())
+    .filter((t) => t.length > 0 && !isCivility(t));
+};
+
+/** Vrai si la chaîne contient une civilité explicite */
+const hasCivility = (s: string): boolean => {
+  const low = s.toLowerCase();
+  return CIVILITY_TOKENS.some((c) => low.includes(c));
+};
+
+/**
+ * Heuristique "personne physique" :
+ * - Le record doit contenir une civilité (Madame/Monsieur/…).
+ * - Tous les tokens (>=2 recommandé) de la recherche doivent être présents
+ *   dans la denomination du record (ordre indifférent, sans accents).
+ * - Pas de sous-chaînes : correspondance par token exact.
+ */
+const isPersonalNameGoodMatch = (
+  searchName: string,
+  recordDenomination: string
+): boolean => {
+  if (!hasCivility(recordDenomination)) return false;
+
+  const targetTokens = nameTokens(searchName);
+  const recordTokens = nameTokens(recordDenomination);
+
+  // Ex: "LE LAMER Audrey" -> ["le","lamer","audrey"] (>= 2 sinon trop vague)
+  if (targetTokens.length < 2) return false;
+
+  // Tous les tokens de la recherche doivent être inclus tels quels dans la denom record
+  return targetTokens.every((t) => recordTokens.includes(t));
+};
+
+/* ------------------------------- Fetch API ------------------------------- */
 
 /**
  * Tente d'abord un match strict via refine.denomination,
@@ -87,10 +148,15 @@ const fetchRecords = async (name: string): Promise<OpenDataRecord[]> => {
   return [];
 };
 
+/* ---------------------------- Sélection du match ---------------------------- */
+
 /**
- * Ne retourne qu'un enregistrement dont la denomination
- * correspond EXACTEMENT (après normalisation) au nom du centre.
- * Pas de fallback permissif.
+ * Règles :
+ * 1) On garde le match exact (normalizeCenterName) prioritaire (entreprise).
+ * 2) À défaut, si un record a civilité ET que tous les tokens de la recherche
+ *    sont inclus dans sa dénomination (ordre libre), on l'accepte (personne).
+ * 3) On trie les matches multiples par date de dernière déclaration (desc).
+ * 4) Sinon, aucun match.
  */
 const pickBestRecord = (
   centerName: string,
@@ -98,6 +164,7 @@ const pickBestRecord = (
 ): OpenDataRecord | undefined => {
   const normalizedTarget = normalizeCenterName(centerName);
 
+  // 1) Exact match (entreprise, ou personne identique mot-à-mot)
   const exactMatches = records.filter((record) => {
     const denomination = normalize(record.fields.denomination);
     if (!denomination) return false;
@@ -105,17 +172,40 @@ const pickBestRecord = (
     return normalizedDenomination === normalizedTarget;
   });
 
-  if (exactMatches.length > 1) {
-    exactMatches.sort((a, b) => {
-      const da = a.fields.informationsdeclarees_datedernieredeclaration ?? "";
-      const db = b.fields.informationsdeclarees_datedernieredeclaration ?? "";
-      // tri décroissant (le plus récent d'abord)
-      return db.localeCompare(da);
-    });
+  if (exactMatches.length > 0) {
+    if (exactMatches.length > 1) {
+      exactMatches.sort((a, b) => {
+        const da = a.fields.informationsdeclarees_datedernieredeclaration ?? "";
+        const db = b.fields.informationsdeclarees_datedernieredeclaration ?? "";
+        return db.localeCompare(da);
+      });
+    }
+    return exactMatches[0];
   }
 
-  return exactMatches[0]; // undefined s'il n'y a pas de match exact
+  // 2) Fallback "personne physique" (civilité + tokens inclus)
+  const personalMatches = records.filter((record) => {
+    const denomination = normalize(record.fields.denomination);
+    if (!denomination) return false;
+    return isPersonalNameGoodMatch(centerName, denomination);
+  });
+
+  if (personalMatches.length > 0) {
+    if (personalMatches.length > 1) {
+      personalMatches.sort((a, b) => {
+        const da = a.fields.informationsdeclarees_datedernieredeclaration ?? "";
+        const db = b.fields.informationsdeclarees_datedernieredeclaration ?? "";
+        return db.localeCompare(da);
+      });
+    }
+    return personalMatches[0];
+  }
+
+  // 3) Rien d'acceptable
+  return undefined;
 };
+
+/* --------------------------------- Update --------------------------------- */
 
 const updateCenterWithRecord = async (
   centerId: number,
@@ -139,6 +229,8 @@ const updateCenterWithRecord = async (
     data: updateData,
   });
 };
+
+/* --------------------------------- Main ---------------------------------- */
 
 export const syncOpenData = async () => {
   const centers = await prisma.trainingCenter.findMany({
@@ -175,7 +267,7 @@ export const syncOpenData = async () => {
       const bestMatch = pickBestRecord(center.name, records);
       if (!bestMatch) {
         logger.warn(
-          'Pas de correspondance EXACTE pour "%s" — centre ignoré',
+          'Pas de correspondance acceptable pour "%s" — centre ignoré (ni exact, ni personne avec civilité)',
           searchName
         );
         continue;
