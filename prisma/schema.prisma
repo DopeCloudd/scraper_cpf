@@ -51,6 +51,7 @@ model Training {
   title               String
   detailUrl           String           @unique
   summary             String?
+  descriptionHtml     String?         @db.LongText
   modality            String?
   certification       String?
   locationText        String?

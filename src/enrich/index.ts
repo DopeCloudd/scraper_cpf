@@ -27,6 +27,7 @@ interface ParsedDetailData {
   postalCode?: string;
   region?: string;
   country?: string;
+  descriptionHtml?: string;
   summary?: string;
   raw: Prisma.InputJsonValue;
 }
@@ -183,6 +184,10 @@ const parseDetailPage = async (page: Page): Promise<ParsedDetailData> => {
     pickText(page, ["li.bloc-info.localisation .soustitre"]),
   ]);
 
+  const descriptionHtml = await page
+    .$eval("#bloc-description", (element) => element.innerHTML.trim())
+    .catch(() => undefined);
+
   const contacts = await extractContacts(page);
 
   const detailJson = await page.evaluate(() => {
@@ -212,6 +217,7 @@ const parseDetailPage = async (page: Page): Promise<ParsedDetailData> => {
       priceText,
       durationText,
       addressBlock,
+      descriptionHtml,
       timestamp: new Date().toISOString(),
     },
   };
@@ -267,6 +273,7 @@ const parseDetailPage = async (page: Page): Promise<ParsedDetailData> => {
     postalCode,
     region,
     country,
+    descriptionHtml,
     raw: enrichedDetailJson as Prisma.InputJsonValue,
   };
 };
@@ -415,6 +422,10 @@ const processTraining = async (
           durationText: parseResult?.durationText ?? undefined,
           durationHours: parseResult?.durationHours ?? undefined,
           summary: parseResult?.summary ?? undefined,
+          descriptionHtml:
+            parseResult?.descriptionHtml && parseResult.descriptionHtml.length
+              ? parseResult.descriptionHtml
+              : undefined,
           detailPageData: parseResult?.raw,
           needsDetail: false,
           lastDetailScrapedAt: new Date(),
