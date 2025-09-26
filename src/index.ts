@@ -45,7 +45,7 @@ const parseCli = (): CliOptions => {
 
 const showHelp = () => {
   // eslint-disable-next-line no-console
-  console.log(`Usage: npm run dev -- [options]\n\nOptions:\n  -q, --query <name>    Exécute uniquement la requête spécifiée (répétable)\n  -h, --help            Affiche cette aide\n\nRequêtes disponibles :\n  ${searchQueries.map((query) => `- ${query.name}`).join('\n  ')}`);
+  console.log(`Usage: npm run dev -- [options]\n\nOptions:\n  -q, --query <name>    Exécute uniquement la requête spécifiée (répétable).\n                         Accepte un nom exact (ex: anglais-paris-mixte) ou un\n                         raccourci thème (ex: anglais) pour toutes les variantes.\n  -h, --help            Affiche cette aide\n\nRequêtes disponibles :\n  ${searchQueries.map((query) => `- ${query.name}`).join('\n  ')}`);
 };
 
 const main = async () => {
@@ -57,14 +57,34 @@ const main = async () => {
   }
 
   const { queryNames } = options;
-  const queriesToRun =
-    queryNames.length === 0
-      ? searchQueries
-      : searchQueries.filter((query) => queryNames.includes(query.name));
+  let queriesToRun = searchQueries;
+  let unknownQueries: string[] = [];
 
-  const unknownQueries = queryNames.filter(
-    (name) => !searchQueries.some((query) => query.name === name)
-  );
+  if (queryNames.length > 0) {
+    const matchedNames = new Set<string>();
+    const misses: string[] = [];
+
+    for (const requested of queryNames) {
+      let hasMatch = false;
+
+      for (const query of searchQueries) {
+        if (
+          query.name === requested ||
+          query.name.startsWith(`${requested}-`)
+        ) {
+          matchedNames.add(query.name);
+          hasMatch = true;
+        }
+      }
+
+      if (!hasMatch) {
+        misses.push(requested);
+      }
+    }
+
+    queriesToRun = searchQueries.filter((query) => matchedNames.has(query.name));
+    unknownQueries = misses;
+  }
 
   if (unknownQueries.length > 0) {
     logger.warn('Requêtes inconnues ignorées: %s', unknownQueries.join(', '));
