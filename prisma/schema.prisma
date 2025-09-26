@@ -19,7 +19,7 @@ model TrainingCenter {
   declaredTrainers   Int?
   openDataUpdatedAt  DateTime?
   openDataPayload    Json?
-  address             String?
+  address             String?    @db.Text
   city                String?
   postalCode          String?
   region              String?
@@ -52,6 +52,7 @@ model Training {
   detailUrl           String           @unique
   summary             String?
   descriptionHtml     String?         @db.LongText
+  address             String?         @db.Text
   modality            String?
   certification       String?
   locationText        String?

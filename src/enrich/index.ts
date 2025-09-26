@@ -451,6 +451,7 @@ const processTraining = async (
           durationText: parseResult?.durationText ?? undefined,
           durationHours: parseResult?.durationHours ?? undefined,
           summary: parseResult?.summary ?? undefined,
+          address: parseResult?.address ?? undefined,
           descriptionHtml:
             parseResult?.descriptionHtml && parseResult.descriptionHtml.length
               ? parseResult.descriptionHtml
@@ -472,28 +473,22 @@ const processTraining = async (
       dbError instanceof Error ? dbError.message : String(dbError)
     );
 
-    // En cas d'erreur de transaction, on essaie au moins de marquer comme traité
+    // Laisser needsDetail à true pour réessayer plus tard, mais noter la tentative.
     try {
       await prisma.training.update({
         where: { id: trainingId },
         data: {
-          needsDetail: false,
           lastDetailScrapedAt: new Date(),
         },
       });
-      logger.info(
-        "Formation %d marquée comme traitée malgré l'erreur",
-        trainingId
-      );
     } catch (fallbackError) {
       logger.error(
-        "Impossible de marquer la formation %d comme traitée: %s",
+        "Impossible de consigner l'erreur pour la formation %d: %s",
         trainingId,
         fallbackError instanceof Error
           ? fallbackError.message
           : String(fallbackError)
       );
-      return false;
     }
 
     return false;
