@@ -5,7 +5,7 @@ export interface SearchQuery {
   payload: SearchQueryPayload;
 }
 
-export const searchQueries: SearchQuery[] = [
+const distanceQueries: SearchQuery[] = [
   {
     name: 'anglais-distance',
     payload: {
@@ -41,7 +41,7 @@ export const searchQueries: SearchQuery[] = [
     payload: {
       ou: {
         modality: 'A_DISTANCE',
-        type: 'CP'
+        type: 'CP',
       },
       debutPagination: 1,
       nombreOccurences: 10,
@@ -62,7 +62,7 @@ export const searchQueries: SearchQuery[] = [
         code: 'CPF202',
         libelle: 'BILAN DE COMPETENCES',
         type: 'CERTIFICATION',
-        publics: ['GD_PUBLIC']
+        publics: ['GD_PUBLIC'],
       },
     },
   },
@@ -71,7 +71,7 @@ export const searchQueries: SearchQuery[] = [
     payload: {
       ou: {
         modality: 'A_DISTANCE',
-        type: 'CP'
+        type: 'CP',
       },
       debutPagination: 1,
       nombreOccurences: 10,
@@ -92,7 +92,7 @@ export const searchQueries: SearchQuery[] = [
         code: '44591',
         libelle: 'VALIDATION ACQUIS EXPERIENCE',
         type: 'FORMACODE',
-        publics: ['GD_PUBLIC']
+        publics: ['GD_PUBLIC'],
       },
     },
   },
@@ -156,4 +156,289 @@ export const searchQueries: SearchQuery[] = [
       },
     },
   },
+];
+
+type CityConfig = {
+  slug: string;
+  name: string;
+  postalCode: string;
+  inseeCode: string;
+  longitude: number;
+  latitude: number;
+};
+
+const mixteCities: CityConfig[] = [
+  {
+    slug: 'angers',
+    name: 'ANGERS',
+    postalCode: '49000',
+    inseeCode: '49007',
+    longitude: -0.54503,
+    latitude: 47.49149,
+  },
+  {
+    slug: 'avignon',
+    name: 'AVIGNON',
+    postalCode: '84000',
+    inseeCode: '84007',
+    longitude: 4.841166,
+    latitude: 43.93526,
+  },
+  {
+    slug: 'bordeaux',
+    name: 'BORDEAUX',
+    postalCode: '33000',
+    inseeCode: '33063',
+    longitude: -0.573595,
+    latitude: 44.857937,
+  },
+  {
+    slug: 'dijon',
+    name: 'DIJON',
+    postalCode: '21000',
+    inseeCode: '21231',
+    longitude: 5.0375123,
+    latitude: 47.32294,
+  },
+  {
+    slug: 'grenoble',
+    name: 'GRENOBLE',
+    postalCode: '38000',
+    inseeCode: '38185',
+    longitude: 5.720799,
+    latitude: 45.182156,
+  },
+  {
+    slug: 'lyon',
+    name: 'LYON',
+    postalCode: '69000',
+    inseeCode: '69123',
+    longitude: 4.832079,
+    latitude: 45.757774,
+  },
+  {
+    slug: 'lille',
+    name: 'LILLE',
+    postalCode: '59000',
+    inseeCode: '59350',
+    longitude: 3.047087,
+    latitude: 50.63192,
+  },
+  {
+    slug: 'marseille',
+    name: 'MARSEILLE',
+    postalCode: '13000',
+    inseeCode: '13055',
+    longitude: 5.36978,
+    latitude: 43.296482,
+  },
+  {
+    slug: 'montpellier',
+    name: 'MONTPELLIER',
+    postalCode: '34000',
+    inseeCode: '34172',
+    longitude: 3.869198,
+    latitude: 43.613087,
+  },
+  {
+    slug: 'toulouse',
+    name: 'TOULOUSE',
+    postalCode: '31000',
+    inseeCode: '31555',
+    longitude: 1.4322938,
+    latitude: 43.59597,
+  },
+  {
+    slug: 'toulon',
+    name: 'TOULON',
+    postalCode: '83000',
+    inseeCode: '83137',
+    longitude: 5.9327564,
+    latitude: 43.136402,
+  },
+  {
+    slug: 'tours',
+    name: 'TOURS',
+    postalCode: '37000',
+    inseeCode: '37261',
+    longitude: 0.69629747,
+    latitude: 47.397972,
+  },
+  {
+    slug: 'nantes',
+    name: 'NANTES',
+    postalCode: '44000',
+    inseeCode: '44109',
+    longitude: -1.5478069,
+    latitude: 47.23218,
+  },
+  {
+    slug: 'nice',
+    name: 'NICE',
+    postalCode: '06000',
+    inseeCode: '06088',
+    longitude: 7.237529,
+    latitude: 43.712227,
+  },
+  {
+    slug: 'paris',
+    name: 'PARIS',
+    postalCode: '75000',
+    inseeCode: '75056',
+    longitude: 2.342562,
+    latitude: 48.85653,
+  },
+  {
+    slug: 'rennes',
+    name: 'RENNES',
+    postalCode: '35000',
+    inseeCode: '35238',
+    longitude: -1.6816379,
+    latitude: 48.111637,
+  },
+  {
+    slug: 'strasbourg',
+    name: 'STRASBOURG',
+    postalCode: '67000',
+    inseeCode: '67482',
+    longitude: 7.7676826,
+    latitude: 48.57162,
+  },
+];
+
+interface MixteTheme {
+  slug: string;
+  code: string;
+  libelle: string;
+  type: 'FORMACODE' | 'CERTIFICATION';
+}
+
+const mixteThemes: MixteTheme[] = [
+  {
+    slug: 'bilan-competences',
+    code: 'CPF202',
+    libelle: 'BILAN DE COMPETENCES',
+    type: 'CERTIFICATION',
+  },
+  {
+    slug: 'developpeur-web',
+    code: '31090',
+    libelle: 'DEVELOPPEUR WEB',
+    type: 'FORMACODE',
+  },
+  {
+    slug: 'anglais',
+    code: '15234',
+    libelle: 'ANGLAIS',
+    type: 'FORMACODE',
+  },
+  {
+    slug: 'allemand',
+    code: '15287',
+    libelle: 'ALLEMAND',
+    type: 'FORMACODE',
+  },
+  {
+    slug: 'espagnol',
+    code: '15228',
+    libelle: 'ESPAGNOL',
+    type: 'FORMACODE',
+  },
+  {
+    slug: 'graphisme',
+    code: '46072',
+    libelle: 'GRAPHISME',
+    type: 'FORMACODE',
+  },
+  {
+    slug: 'bureautique',
+    code: '15052',
+    libelle: 'BUREAUTIQUE',
+    type: 'FORMACODE',
+  },
+  {
+    slug: 'secretaire',
+    code: '35054',
+    libelle: 'SECRETAIRE',
+    type: 'FORMACODE',
+  },
+  {
+    slug: 'assistante-commerciale',
+    code: '35028',
+    libelle: 'ASSISTANTE COMMERCIALE',
+    type: 'FORMACODE',
+  },
+  {
+    slug: 'logistique',
+    code: '31845',
+    libelle: 'LOGISTIQUE',
+    type: 'FORMACODE',
+  },
+  {
+    slug: 'electricite',
+    code: '24054',
+    libelle: 'ELECTRICITE',
+    type: 'FORMACODE',
+  },
+  {
+    slug: 'marketing',
+    code: '34052',
+    libelle: 'MARKETING',
+    type: 'FORMACODE',
+  },
+];
+
+const createMixtePayload = (
+  city: CityConfig,
+  theme: MixteTheme
+): SearchQueryPayload => ({
+  ou: {
+    modality: 'EN_CENTRE_MIXTE',
+    type: 'CP',
+    ville: {
+      nom: city.name,
+      codePostal: city.postalCode,
+      codeInsee: city.inseeCode,
+      coordonnee: {
+        longitude: city.longitude,
+        latitude: city.latitude,
+      },
+      eligibleCpf: true,
+    },
+  },
+  debutPagination: 1,
+  nombreOccurences: 10,
+  contexteFormation: 'ACTIVITE_PROFESSIONNELLE',
+  nomOrganisme: null,
+  conformiteReglementaire: null,
+  endDate: null,
+  startDate: null,
+  evaluation: null,
+  niveauSortie: null,
+  minPrix: null,
+  maxPrix: null,
+  rythme: null,
+  onlyWithAbondementsEligibles: null,
+  durationHours: null,
+  certifications: null,
+  distance: '100',
+  quoi: null,
+  quoiReferentiel: {
+    code: theme.code,
+    libelle: theme.libelle,
+    type: theme.type,
+    publics: ['GD_PUBLIC'],
+  },
+});
+
+const mixteQueries: SearchQuery[] = mixteThemes.flatMap((theme) =>
+  mixteCities.map((city) => ({
+    name: `${theme.slug}-${city.slug}-mixte`,
+    payload: createMixtePayload(city, theme),
+  }))
+);
+
+export const searchQueries: SearchQuery[] = [
+  ...distanceQueries,
+  ...mixteQueries,
 ];
