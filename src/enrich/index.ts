@@ -187,26 +187,36 @@ const parseDetailPage = async (page: Page): Promise<ParsedDetailData> => {
   // Recompose a clean postal address when detailed fragments are present.
   const detailedAddress = await page
     .evaluate(() => {
-      const locationLi =
-        document.querySelector("li.bloc-info.localisation") ??
-        document
-          .querySelector("span.fr-icon-map-pin-2-fill")
-          ?.closest("li");
-
+      const iconSpan = document.querySelector("span.fr-icon-map-pin-2-fill");
+      const locationLi = iconSpan?.closest("li");
       if (!locationLi) return undefined;
 
-      const segments = Array.from(locationLi.querySelectorAll("span"))
-        .map((span) => span.textContent?.trim())
+      const rawSegments = Array.from(
+        locationLi.querySelectorAll("span:not(.fr-icon-map-pin-2-fill)")
+      )
+        .map((span) => span.textContent?.replace(/\s+/g, " ").trim())
         .filter((text): text is string => Boolean(text))
-        .map((text) => text.replace(/\s+/g, " "));
+        .filter(
+          (text) =>
+            !/Localisation/i.test(text) &&
+            !/dsfr-formation-carte/i.test(text) &&
+            !/Accès Personne/i.test(text)
+        );
 
-      if (segments.length === 0) return undefined;
+      if (rawSegments.length === 0) return undefined;
 
-      const firstAddressIndex = segments.findIndex((text) => /\d{2,}/.test(text));
-      const relevantSegments =
-        firstAddressIndex >= 0 ? segments.slice(firstAddressIndex) : segments;
+      let segments = rawSegments.slice();
+      const firstAddressIdx = segments.findIndex((text) => /\d/.test(text));
+      if (firstAddressIdx > 0) {
+        segments = segments.slice(firstAddressIdx);
+      }
 
-      const address = relevantSegments.join(" ").replace(/\s+/g, " ").trim();
+      // Deduplicate consecutive identical segments
+      segments = segments.filter(
+        (text, index) => index === 0 || text !== segments[index - 1]
+      );
+
+      const address = segments.join(" ").replace(/\s+/g, " ").trim();
       return address || undefined;
     })
     .catch(() => undefined);
@@ -312,7 +322,7 @@ const updateCenterInfo = async (centerId: number, parsed: ParsedDetailData) => {
     lastDetailScrapedAt: new Date(),
   };
 
-  if (parsed.address) centerUpdates.address = parsed.address;
+  if (parsed.address) centerUpdates.address = parsed.address.trim();
   const centerCity = parsed.city?.trim();
   if (centerCity) centerUpdates.city = centerCity;
   const centerPostalCode = parsed.postalCode?.trim();
@@ -455,7 +465,7 @@ const processTraining = async (
           durationText: parseResult?.durationText ?? undefined,
           durationHours: parseResult?.durationHours ?? undefined,
           summary: parseResult?.summary ?? undefined,
-          address: parseResult?.address ?? undefined,
+          address: parseResult?.address?.trim() ?? undefined,
           city: parseResult?.city?.trim() || undefined,
           postalCode: parseResult?.postalCode?.trim() || undefined,
           region: parseResult?.region?.trim() || undefined,

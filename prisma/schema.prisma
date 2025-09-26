@@ -20,9 +20,9 @@ model TrainingCenter {
   openDataUpdatedAt  DateTime?
   openDataPayload    Json?
   address             String?    @db.Text
-  city                String?    @db.VarChar(255)
+  city                String?    @db.VarChar(512)
   postalCode          String?    @db.VarChar(32)
-  region              String?    @db.VarChar(255)
+  region              String?    @db.VarChar(512)
   country             String?    @db.VarChar(32) @default("FR")
   latitude            Float?
   longitude           Float?
@@ -53,9 +53,9 @@ model Training {
   summary             String?
   descriptionHtml     String?         @db.LongText
   address             String?         @db.Text
-  city                String?         @db.VarChar(255)
+  city                String?         @db.VarChar(512)
   postalCode          String?         @db.VarChar(32)
-  region              String?         @db.VarChar(255)
+  region              String?         @db.VarChar(512)
   country             String?         @db.VarChar(32)
   modality            String?
   certification       String?
