@@ -178,11 +178,40 @@ const validateWebsiteUrl = (url?: string): string | undefined => {
 };
 
 const parseDetailPage = async (page: Page): Promise<ParsedDetailData> => {
-  const [priceText, durationText, addressBlock] = await Promise.all([
+  const [priceText, durationText, basicAddressText] = await Promise.all([
     pickText(page, ["li.bloc-info.prix .soustitre"]),
     pickText(page, ["li.bloc-info .soustitre.dureeRythme"]),
     pickText(page, ["li.bloc-info.localisation .soustitre"]),
   ]);
+
+  // Recompose a clean postal address when detailed fragments are present.
+  const detailedAddress = await page
+    .evaluate(() => {
+      const locationLi =
+        document.querySelector("li.bloc-info.localisation") ??
+        document
+          .querySelector("span.fr-icon-map-pin-2-fill")
+          ?.closest("li");
+
+      if (!locationLi) return undefined;
+
+      const segments = Array.from(locationLi.querySelectorAll("span"))
+        .map((span) => span.textContent?.trim())
+        .filter((text): text is string => Boolean(text))
+        .map((text) => text.replace(/\s+/g, " "));
+
+      if (segments.length === 0) return undefined;
+
+      const firstAddressIndex = segments.findIndex((text) => /\d{2,}/.test(text));
+      const relevantSegments =
+        firstAddressIndex >= 0 ? segments.slice(firstAddressIndex) : segments;
+
+      const address = relevantSegments.join(" ").replace(/\s+/g, " ").trim();
+      return address || undefined;
+    })
+    .catch(() => undefined);
+
+  const addressBlock = detailedAddress ?? basicAddressText ?? undefined;
 
   const descriptionHtml = await page
     .$eval("#bloc-description", (element) => element.innerHTML.trim())
