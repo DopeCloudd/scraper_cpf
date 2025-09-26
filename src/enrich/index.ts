@@ -313,10 +313,14 @@ const updateCenterInfo = async (centerId: number, parsed: ParsedDetailData) => {
   };
 
   if (parsed.address) centerUpdates.address = parsed.address;
-  if (parsed.city) centerUpdates.city = parsed.city;
-  if (parsed.postalCode) centerUpdates.postalCode = parsed.postalCode;
-  if (parsed.region) centerUpdates.region = parsed.region;
-  if (parsed.country) centerUpdates.country = parsed.country;
+  const centerCity = parsed.city?.trim();
+  if (centerCity) centerUpdates.city = centerCity;
+  const centerPostalCode = parsed.postalCode?.trim();
+  if (centerPostalCode) centerUpdates.postalCode = centerPostalCode;
+  const centerRegion = parsed.region?.trim();
+  if (centerRegion) centerUpdates.region = centerRegion;
+  const centerCountry = parsed.country?.trim();
+  if (centerCountry) centerUpdates.country = centerCountry;
   if (parsed.contacts.email) centerUpdates.email = parsed.contacts.email;
   if (parsed.contacts.phone) centerUpdates.phone = parsed.contacts.phone;
 
@@ -452,6 +456,10 @@ const processTraining = async (
           durationHours: parseResult?.durationHours ?? undefined,
           summary: parseResult?.summary ?? undefined,
           address: parseResult?.address ?? undefined,
+          city: parseResult?.city?.trim() || undefined,
+          postalCode: parseResult?.postalCode?.trim() || undefined,
+          region: parseResult?.region?.trim() || undefined,
+          country: parseResult?.country?.trim() || undefined,
           descriptionHtml:
             parseResult?.descriptionHtml && parseResult.descriptionHtml.length
               ? parseResult.descriptionHtml
