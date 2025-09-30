@@ -7,6 +7,12 @@ interface CliOptions {
   help: boolean;
 }
 
+const normalizeQueryNames = (rawValues: string[]): string[] =>
+  rawValues
+    .flatMap((rawValue) => rawValue.split(','))
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
+
 const parseCli = (): CliOptions => {
   const args = process.argv.slice(2);
   const options: CliOptions = {
@@ -23,19 +29,28 @@ const parseCli = (): CliOptions => {
     }
 
     if (arg.startsWith('--query=')) {
-      const value = arg.split('=')[1]?.trim();
-      if (value) {
-        options.queryNames.push(value);
-      }
+      const value = arg.split('=')[1];
+      options.queryNames.push(...normalizeQueryNames(value ? [value] : []));
       continue;
     }
 
     if (arg === '--query' || arg === '-q') {
-      const value = args[index + 1];
-      if (value && !value.startsWith('-')) {
-        options.queryNames.push(value.trim());
-        index += 1;
+      const values: string[] = [];
+      let lookahead = index + 1;
+
+      while (lookahead < args.length) {
+        const candidate = args[lookahead];
+
+        if (candidate.startsWith('-')) {
+          break;
+        }
+
+        values.push(candidate);
+        lookahead += 1;
       }
+
+      options.queryNames.push(...normalizeQueryNames(values));
+      index = lookahead - 1;
       continue;
     }
   }
@@ -45,7 +60,7 @@ const parseCli = (): CliOptions => {
 
 const showHelp = () => {
   // eslint-disable-next-line no-console
-  console.log(`Usage: npm run dev -- [options]\n\nOptions:\n  -q, --query <name>    Exécute uniquement la requête spécifiée (répétable).\n                         Accepte un nom exact (ex: anglais-paris-mixte) ou un\n                         raccourci thème (ex: anglais) pour toutes les variantes.\n  -h, --help            Affiche cette aide\n\nRequêtes disponibles :\n  ${searchQueries.map((query) => `- ${query.name}`).join('\n  ')}`);
+  console.log(`Usage: npm run dev -- [options]\n\nOptions:\n  -q, --query <name...> Exécute uniquement les requêtes spécifiées.\n                         Accepte plusieurs valeurs séparées par des espaces ou\n                         des virgules (ex: -q anglais paris) ou un raccourci\n                         thème (ex: anglais) pour toutes les variantes.\n  -h, --help            Affiche cette aide\n\nRequêtes disponibles :\n  ${searchQueries.map((query) => `- ${query.name}`).join('\n  ')}`);
 };
 
 const main = async () => {
