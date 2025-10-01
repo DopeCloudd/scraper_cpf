@@ -74,6 +74,7 @@ async function writeCentersSheet(workbook: ExcelJS.stream.xlsx.WorkbookWriter) {
     { header: "Nb stagiaires déclarés", key: "declTrainees", width: 14 },
     { header: "Nb stagiaires délégués", key: "delegTrainees", width: 14 },
     { header: "Nb formateurs", key: "declTrainers", width: 14 },
+    { header: "Début exercice", key: "fiscalYearStart", width: 18 },
     { header: "MAJ OpenData", key: "openDataUpdatedAt", width: 20 },
     { header: "Formations (nb)", key: "trainingsCount", width: 16 },
     { header: "List scrappée", key: "lastListScrapedAt", width: 20 },
@@ -121,6 +122,7 @@ async function writeCentersSheet(workbook: ExcelJS.stream.xlsx.WorkbookWriter) {
         declaredTrainees: true,
         delegatedTrainees: true,
         declaredTrainers: true,
+        fiscalYearStart: true,
         openDataUpdatedAt: true,
         lastListScrapedAt: true,
         lastDetailScrapedAt: true,
@@ -148,6 +150,7 @@ async function writeCentersSheet(workbook: ExcelJS.stream.xlsx.WorkbookWriter) {
         declTrainees: c.declaredTrainees ?? "",
         delegTrainees: c.delegatedTrainees ?? "",
         declTrainers: c.declaredTrainers ?? "",
+        fiscalYearStart: c.fiscalYearStart ?? "",
         openDataUpdatedAt: c.openDataUpdatedAt ?? "",
         trainingsCount: countMap.get(c.id) ?? 0,
         lastListScrapedAt: c.lastListScrapedAt ?? "",
@@ -173,6 +176,7 @@ async function writeCentersSheet(workbook: ExcelJS.stream.xlsx.WorkbookWriter) {
       // dates formatting
       [
         "openDataUpdatedAt",
+        "fiscalYearStart",
         "lastListScrapedAt",
         "lastDetailScrapedAt",
         "createdAt",

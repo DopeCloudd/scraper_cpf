@@ -17,6 +17,7 @@ model TrainingCenter {
   declaredTrainees   Int?
   delegatedTrainees  Int?
   declaredTrainers   Int?
+  fiscalYearStart    DateTime?
   openDataUpdatedAt  DateTime?
   openDataPayload    Json?
   address             String?    @db.Text

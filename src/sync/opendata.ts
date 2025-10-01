@@ -17,6 +17,7 @@ type OpenDataRecord = {
     informationsdeclarees_nbstagiairesconfiesparunautreof?: number;
     informationsdeclarees_effectifformateurs?: number;
     informationsdeclarees_datedernieredeclaration?: string;
+    informationsdeclarees_debutexercice?: string;
     numerodeclarationactivite?: string;
     numerosdeclarationactiviteprecedent?: string;
     adressephysiqueorganismeformation_ville?: string;
@@ -46,6 +47,29 @@ const removeAccents = (s: string) =>
   s.normalize("NFD").replace(/\p{Diacritic}/gu, "");
 
 const cleanSpaces = (s: string) => s.replace(/\s+/g, " ").trim();
+
+const parseOpenDataDate = (value: Nullable<string>): Date | null => {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return null;
+
+  const isoMatch = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (isoMatch) {
+    const [, year, month, day] = isoMatch;
+    const date = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  const frMatch = trimmed.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (frMatch) {
+    const [, day, month, year] = frMatch;
+    const date = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  const fallback = new Date(trimmed);
+  return Number.isNaN(fallback.getTime()) ? null : fallback;
+};
 
 const CIVILITY_TOKENS = [
   "madame",
@@ -212,6 +236,9 @@ const updateCenterWithRecord = async (
   record: OpenDataRecord
 ) => {
   const payload = record.fields;
+  const fiscalYearStart = parseOpenDataDate(
+    payload.informationsdeclarees_debutexercice
+  );
 
   const updateData: Prisma.TrainingCenterUpdateInput = {
     siren: payload.siren ?? null,
@@ -220,6 +247,7 @@ const updateCenterWithRecord = async (
     delegatedTrainees:
       payload.informationsdeclarees_nbstagiairesconfiesparunautreof ?? null,
     declaredTrainers: payload.informationsdeclarees_effectifformateurs ?? null,
+    fiscalYearStart,
     openDataPayload: payload as Prisma.InputJsonValue,
     openDataUpdatedAt: new Date(),
   };
@@ -240,6 +268,7 @@ export const syncOpenData = async () => {
         { siret: null },
         { declaredTrainees: null },
         { declaredTrainers: null },
+        { fiscalYearStart: null },
       ],
     },
     orderBy: { id: "asc" },
