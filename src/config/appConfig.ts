@@ -17,4 +17,8 @@ export const appConfig = {
   maxWaitMs: Number(process.env.MAX_WAIT_MS ?? 2000),
   navigationTimeoutMs: Number(process.env.NAVIGATION_TIMEOUT_MS ?? 45000),
   detailBatchSize: Number(process.env.DETAIL_BATCH_SIZE ?? 10),
+  detailConcurrency: Number(process.env.DETAIL_CONCURRENCY ?? 2),
+  detailMaxRetries: Number(process.env.DETAIL_MAX_RETRIES ?? 2),
+  detailPageReuseLimit: Number(process.env.DETAIL_PAGE_REUSE_LIMIT ?? 25),
+  detailIdleWaitMs: Number(process.env.DETAIL_IDLE_WAIT_MS ?? 250),
 };

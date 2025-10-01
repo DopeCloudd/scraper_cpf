@@ -3,7 +3,7 @@ import type { Page } from "puppeteer";
 import { appConfig } from "../config/appConfig";
 import { prisma } from "../db/prisma";
 import { createBrowser } from "../scraper/browser";
-import { humanDelay, randomBetween } from "../utils/humanizer";
+import { humanDelay, randomBetween, waitFor } from "../utils/humanizer";
 import { logger } from "../utils/logger";
 import { randomUserAgent } from "../utils/userAgent";
 
@@ -515,63 +515,214 @@ const processTraining = async (
   return true;
 };
 
+interface TrainingTask {
+  id: number;
+  attempts: number;
+}
+
 export const runEnrichment = async () => {
   const browser = await createBrowser();
-  const page = await browser.newPage();
 
-  await page.setDefaultNavigationTimeout(appConfig.navigationTimeoutMs);
-  await page.setExtraHTTPHeaders({
-    "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
-  });
+  const ensurePositiveInt = (value: number | undefined, fallback: number) => {
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+      return fallback;
+    }
+    const rounded = Math.floor(value);
+    return rounded > 0 ? rounded : fallback;
+  };
 
-  let processed = 0;
-  let success = 0;
+  const concurrency = ensurePositiveInt(appConfig.detailConcurrency, 1);
+  const maxRetries = Math.max(0, Math.floor(appConfig.detailMaxRetries ?? 0));
+  const pageReuseLimit = ensurePositiveInt(appConfig.detailPageReuseLimit, 25);
+  const idleWaitMs = ensurePositiveInt(appConfig.detailIdleWaitMs, 250);
 
   try {
-    // 🔓 Boucle sans limite : on s'arrête uniquement quand il n'y a plus de needsDetail
-    // (ou en cas d'erreur qui vide la file)
-    // Si tu veux un garde-fou, ajoute un max itérations optionnel.
-    // for (;;) { ... }
-    // Ici, on utilise while(true) pour rester explicite.
-    while (true) {
-      const training = await prisma.training.findFirst({
-        where: { needsDetail: true },
-        select: { id: true },
-        orderBy: [{ lastDetailScrapedAt: "asc" }, { id: "asc" }],
-      });
+    const trainingsToProcess = await prisma.training.findMany({
+      where: { needsDetail: true },
+      select: { id: true },
+      orderBy: [{ lastDetailScrapedAt: "asc" }, { id: "asc" }],
+    });
 
-      if (!training) {
-        logger.info("Aucune formation à enrichir.");
-        break;
-      }
-
-      const result = await processTraining(page, training.id);
-      processed += 1;
-
-      if (result) {
-        success += 1;
-        await humanDelay(
-          randomBetween(appConfig.minWaitMs, appConfig.maxWaitMs)
-        );
-      } else {
-        await prisma.training.update({
-          where: { id: training.id },
-          data: {
-            lastDetailScrapedAt: new Date(),
-          },
-        });
-        await humanDelay(randomBetween(2000, 5000));
-      }
+    if (trainingsToProcess.length === 0) {
+      logger.info("Aucune formation à enrichir.");
+      return;
     }
 
+    const tasks: TrainingTask[] = trainingsToProcess.map((training) => ({
+      id: training.id,
+      attempts: 0,
+    }));
+
+    let processed = 0;
+    let success = 0;
+    let permanentFailures = 0;
+    let activeTasks = 0;
+
+    const acceptLanguageHeader = {
+      "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
+    } as Record<string, string>;
+
+    const createWorkerPage = async (): Promise<Page> => {
+      const workerPage = await browser.newPage();
+      await workerPage.setDefaultNavigationTimeout(appConfig.navigationTimeoutMs);
+      await workerPage.setExtraHTTPHeaders(acceptLanguageHeader);
+      return workerPage;
+    };
+
+    const requeueTraining = (task: TrainingTask, reason: string) => {
+      if (task.attempts < maxRetries) {
+        const nextTask: TrainingTask = {
+          id: task.id,
+          attempts: task.attempts + 1,
+        };
+        tasks.push(nextTask);
+        logger.debug(
+          "Replanification formation %d (tentative %d/%d) après %s",
+          task.id,
+          nextTask.attempts,
+          maxRetries + 1,
+          reason
+        );
+      } else {
+        permanentFailures += 1;
+        logger.warn(
+          "Abandon formation %d après %d tentative(s) (%s)",
+          task.id,
+          task.attempts + 1,
+          reason
+        );
+      }
+    };
+
+    const worker = async (workerIndex: number) => {
+      let page = await createWorkerPage();
+      let pageUses = 0;
+
+      while (true) {
+        const task = (() => {
+          const nextTask = tasks.shift();
+          if (nextTask) {
+            activeTasks += 1;
+          }
+          return nextTask;
+        })();
+
+        if (!task) {
+          if (activeTasks === 0 && tasks.length === 0) {
+            break;
+          }
+          await waitFor(idleWaitMs);
+          continue;
+        }
+
+        let pageNeedsRecycle = false;
+
+        try {
+          const result = await processTraining(page, task.id);
+
+          if (result) {
+            success += 1;
+            await humanDelay(
+              randomBetween(appConfig.minWaitMs, appConfig.maxWaitMs)
+            );
+          } else {
+            await prisma.training
+              .update({
+                where: { id: task.id },
+                data: { lastDetailScrapedAt: new Date() },
+              })
+              .catch((error) => {
+                logger.error(
+                  "Impossible de marquer la tentative pour %d: %s",
+                  task.id,
+                  error instanceof Error ? error.message : String(error)
+                );
+              });
+            requeueTraining(task, "résultat incomplet");
+            await humanDelay(randomBetween(2000, 5000));
+          }
+
+          if (page.isClosed()) {
+            pageNeedsRecycle = true;
+          }
+        } catch (error) {
+        logger.error(
+          "Worker %d: erreur sur formation %d: %s",
+          workerIndex,
+          task.id,
+          error instanceof Error ? error.message : String(error)
+        );
+        await prisma.training
+          .update({
+            where: { id: task.id },
+            data: { lastDetailScrapedAt: new Date() },
+          })
+          .catch((updateError) => {
+            logger.error(
+              "Impossible de marquer la tentative (erreur) pour %d: %s",
+              task.id,
+              updateError instanceof Error
+                ? updateError.message
+                : String(updateError)
+            );
+          });
+        requeueTraining(task, "erreur navigateur");
+        pageNeedsRecycle = true;
+        await humanDelay(randomBetween(2000, 5000));
+      } finally {
+          processed += 1;
+          activeTasks = Math.max(0, activeTasks - 1);
+
+          const shouldRecyclePage =
+            pageNeedsRecycle || page.isClosed() || pageUses >= pageReuseLimit;
+
+          if (shouldRecyclePage) {
+            try {
+              if (!page.isClosed()) {
+                await page.close();
+              }
+            } catch (closeError) {
+              logger.debug(
+                "Worker %d: erreur fermeture page: %s",
+                workerIndex,
+                closeError instanceof Error
+                  ? closeError.message
+                  : String(closeError)
+              );
+            }
+
+            page = await createWorkerPage();
+            pageUses = 0;
+          } else {
+            pageUses += 1;
+          }
+        }
+      }
+
+      if (!page.isClosed()) {
+        await page.close().catch(() => undefined);
+      }
+    };
+
+    const workerCount = Math.min(concurrency, tasks.length);
     logger.info(
-      "Enrichissement terminé: %d traité(s), %d succès",
+      "Enrichissement: %d formation(s) à traiter avec %d worker(s)",
+      tasks.length,
+      workerCount
+    );
+
+    await Promise.all(
+      Array.from({ length: workerCount }, (_, index) => worker(index + 1))
+    );
+
+    logger.info(
+      "Enrichissement terminé: %d tentative(s), %d succès, %d échec(s)",
       processed,
-      success
+      success,
+      permanentFailures
     );
   } finally {
-    await page.close();
-    await browser.close();
+    await browser.close().catch(() => undefined);
     await prisma.$disconnect();
   }
 };
