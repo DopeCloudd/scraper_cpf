@@ -482,19 +482,19 @@ const ensureCenter = async (item: NormalizedListItem) => {
 const persistListItem = async (
   normalized: NormalizedListItem,
   query: SearchQuery
-) => {
+): Promise<boolean> => {
   if (!normalized.title || !normalized.detailUrl) {
     logger.warn(
       "Item ignoré (title/detailUrl manquant): %o",
       normalized.listPageData
     );
-    return;
+    return false;
   }
 
   const center = await ensureCenter(normalized);
   if (!center) {
     logger.warn("Centre non déterminé pour %s", normalized.title);
-    return;
+    return false;
   }
 
   const now = new Date();
@@ -503,46 +503,59 @@ const persistListItem = async (
       ? new Prisma.Decimal(normalized.priceValue.toFixed(2))
       : undefined;
 
-  await prisma.training.upsert({
+  const existingTraining = await prisma.training.findUnique({
     where: { detailUrl: normalized.detailUrl },
-    update: {
-      centerId: center.id,
-      externalId: normalized.trainingExternalId ?? undefined,
-      title: normalized.title,
-      summary: normalized.summary,
-      modality: normalized.modality,
-      certification: normalized.certification,
-      locationText: normalized.locationText,
-      region: normalized.region,
-      priceText: normalized.priceText,
-      priceValue: priceDecimal,
-      durationText: normalized.durationText,
-      durationHours: normalized.durationHours ?? undefined,
-      searchQuery: query.name,
-      needsDetail: true,
-      listPageData: normalized.listPageData as Prisma.InputJsonValue,
-      lastListScrapedAt: now,
-    },
-    create: {
-      centerId: center.id,
-      externalId: normalized.trainingExternalId ?? undefined,
-      title: normalized.title,
+    select: { id: true },
+  });
+
+  const commonData = {
+    centerId: center.id,
+    externalId: normalized.trainingExternalId ?? null,
+    title: normalized.title,
+    summary: normalized.summary,
+    modality: normalized.modality,
+    certification: normalized.certification,
+    locationText: normalized.locationText,
+    region: normalized.region,
+    priceText: normalized.priceText,
+    priceValue: priceDecimal ?? null,
+    durationText: normalized.durationText,
+    durationHours: normalized.durationHours ?? null,
+    searchQuery: query.name,
+    needsDetail: true,
+    listPageData: normalized.listPageData as Prisma.InputJsonValue,
+    lastListScrapedAt: now,
+  };
+
+  if (existingTraining) {
+    await prisma.training.update({
+      where: { id: existingTraining.id },
+      data: commonData,
+    });
+    return true;
+  }
+
+  const centerAlreadyHasTraining = await prisma.training.findFirst({
+    where: { centerId: center.id },
+    select: { id: true },
+  });
+
+  if (centerAlreadyHasTraining) {
+    logger.debug(
+      "Formation ignorée car le centre possède déjà une formation (centerId=%s)",
+      center.id
+    );
+    return false;
+  }
+
+  await prisma.training.create({
+    data: {
+      ...commonData,
       detailUrl: normalized.detailUrl,
-      summary: normalized.summary,
-      modality: normalized.modality,
-      certification: normalized.certification,
-      locationText: normalized.locationText,
-      region: normalized.region,
-      priceText: normalized.priceText,
-      priceValue: priceDecimal,
-      durationText: normalized.durationText,
-      durationHours: normalized.durationHours ?? undefined,
-      searchQuery: query.name,
-      needsDetail: true,
-      listPageData: normalized.listPageData as Prisma.InputJsonValue,
-      lastListScrapedAt: now,
     },
   });
+
+  return true;
 };
 
 /* ----------------------------- Process par query ---------------------------- */
@@ -630,8 +643,8 @@ const processQuery = async (browser: Browser, query: SearchQuery) => {
           normalized.listPageData = raw as Prisma.InputJsonValue;
 
           try {
-            await persistListItem(normalized, query);
-            totalSaved += 1;
+            const saved = await persistListItem(normalized, query);
+            if (saved) totalSaved += 1;
           } catch (error) {
             logger.error(
               "Échec sauvegarde formation: %s",
@@ -659,8 +672,8 @@ const processQuery = async (browser: Browser, query: SearchQuery) => {
         normalized.listPageData = raw as Prisma.InputJsonValue;
 
         try {
-          await persistListItem(normalized, query);
-          totalSaved += 1;
+          const saved = await persistListItem(normalized, query);
+          if (saved) totalSaved += 1;
         } catch (error) {
           logger.error(
             "Échec sauvegarde formation: %s",
