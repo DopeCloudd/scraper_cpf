@@ -1152,6 +1152,15 @@ const mixteThemes: MixteTheme[] = [
   },
 ];
 
+const shuffleArray = <T>(array: T[]): T[] => {
+  const shuffled = [...array];
+  for (let i = shuffled.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+  return shuffled;
+};
+
 const createMixtePayload = (
   city: CityConfig,
   theme: MixteTheme
@@ -1195,7 +1204,7 @@ const createMixtePayload = (
   },
 });
 
-const mixteQueries: SearchQuery[] = mixteThemes.flatMap((theme) =>
+const mixteQueries: SearchQuery[] = shuffleArray(mixteThemes).flatMap((theme) =>
   mixteCities.map((city) => ({
     name: `${theme.slug}-${city.slug}-mixte`,
     payload: createMixtePayload(city, theme),
