@@ -4,19 +4,21 @@ import { logger } from './utils/logger';
 
 interface CliOptions {
   queryNames: string[];
+  citySlugs: string[];
   help: boolean;
 }
 
 const normalizeQueryNames = (rawValues: string[]): string[] =>
   rawValues
     .flatMap((rawValue) => rawValue.split(','))
-    .map((value) => value.trim())
+    .map((value) => value.trim().toLowerCase())
     .filter((value) => value.length > 0);
 
 const parseCli = (): CliOptions => {
   const args = process.argv.slice(2);
   const options: CliOptions = {
     queryNames: [],
+    citySlugs: [],
     help: false,
   };
 
@@ -53,6 +55,31 @@ const parseCli = (): CliOptions => {
       index = lookahead - 1;
       continue;
     }
+
+    if (arg.startsWith('--city=')) {
+      const value = arg.split('=')[1];
+      options.citySlugs.push(...normalizeQueryNames(value ? [value] : []));
+      continue;
+    }
+
+    if (arg === '--city' || arg === '-c') {
+      const values: string[] = [];
+      let lookahead = index + 1;
+
+      while (lookahead < args.length) {
+        const candidate = args[lookahead];
+
+        if (candidate.startsWith('-')) {
+          break;
+        }
+
+        values.push(candidate);
+        lookahead += 1;
+      }
+
+      options.citySlugs.push(...normalizeQueryNames(values));
+      index = lookahead - 1;
+    }
   }
 
   return options;
@@ -60,7 +87,7 @@ const parseCli = (): CliOptions => {
 
 const showHelp = () => {
   // eslint-disable-next-line no-console
-  console.log(`Usage: npm run dev -- [options]\n\nOptions:\n  -q, --query <name...> Exécute uniquement les requêtes spécifiées.\n                         Accepte plusieurs valeurs séparées par des espaces ou\n                         des virgules (ex: -q anglais paris) ou un raccourci\n                         thème (ex: anglais) pour toutes les variantes.\n  -h, --help            Affiche cette aide\n\nRequêtes disponibles :\n  ${searchQueries.map((query) => `- ${query.name}`).join('\n  ')}`);
+  console.log(`Usage: npm run dev -- [options]\n\nOptions:\n  -q, --query <name...> Exécute uniquement les requêtes spécifiées.\n                         Accepte plusieurs valeurs séparées par des espaces ou\n                         des virgules (ex: -q anglais paris) ou un raccourci\n                         thème (ex: anglais) pour toutes les variantes.\n  -c, --city <slug...>  Limite les requêtes aux villes données (ex: -c lyon).\n                         Accepte plusieurs valeurs séparées par des espaces ou\n                         des virgules.\n  -h, --help            Affiche cette aide\n\nRequêtes disponibles :\n  ${searchQueries.map((query) => `- ${query.name}`).join('\n  ')}`);
 };
 
 const main = async () => {
@@ -74,6 +101,7 @@ const main = async () => {
   const { queryNames } = options;
   let queriesToRun = searchQueries;
   let unknownQueries: string[] = [];
+  let unknownCities: string[] = [];
 
   if (queryNames.length > 0) {
     const matchedNames = new Set<string>();
@@ -101,8 +129,41 @@ const main = async () => {
     unknownQueries = misses;
   }
 
+  const citySlugs = Array.from(new Set(options.citySlugs));
+  if (citySlugs.length > 0) {
+    const cityMatches = new Set<string>();
+    const misses: string[] = [];
+
+    for (const slug of citySlugs) {
+      const hasMatch = searchQueries.some((query) =>
+        query.name.split('-').includes(slug)
+      );
+      if (!hasMatch) {
+        misses.push(slug);
+        continue;
+      }
+
+      for (const query of queriesToRun) {
+        if (query.name.split('-').includes(slug)) {
+          cityMatches.add(query.name);
+        }
+      }
+    }
+
+    unknownCities = misses;
+    if (cityMatches.size > 0) {
+      queriesToRun = queriesToRun.filter((query) => cityMatches.has(query.name));
+    } else {
+      queriesToRun = [];
+    }
+  }
+
   if (unknownQueries.length > 0) {
     logger.warn('Requêtes inconnues ignorées: %s', unknownQueries.join(', '));
+  }
+
+  if (unknownCities.length > 0) {
+    logger.warn('Villes inconnues ignorées: %s', unknownCities.join(', '));
   }
 
   if (queriesToRun.length === 0) {
