@@ -426,7 +426,13 @@ async function writeSummarySheet(workbook: ExcelJS.stream.xlsx.WorkbookWriter) {
 
 // ------------------------- Main -------------------------
 
-export async function exportToExcel(): Promise<string> {
+type ExportOptions = {
+  includeTrainings?: boolean;
+};
+
+export async function exportToExcel(
+  options: ExportOptions = {}
+): Promise<string> {
   await ensureDir(EXPORT_DIR);
 
   const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
@@ -437,7 +443,11 @@ export async function exportToExcel(): Promise<string> {
 
   try {
     await writeCentersSheet(workbook);
-    await writeTrainingsSheet(workbook);
+    if (options.includeTrainings ?? true) {
+      await writeTrainingsSheet(workbook);
+    } else {
+      logger.info?.("Export ⇒ feuille Formations ignorée (--centers-only)");
+    }
     await writeSummarySheet(workbook);
 
     await workbook.commit();
@@ -462,7 +472,11 @@ export async function exportToExcel(): Promise<string> {
 
 // Exécutable direct (ts-node src/scripts/export-excel.ts)
 if (require.main === module) {
-  exportToExcel()
+  const args = process.argv.slice(2);
+  const centersOnly =
+    args.includes("--centers-only") || args.includes("--centres-only");
+
+  exportToExcel({ includeTrainings: !centersOnly })
     .then((file) => {
       logger.info?.(`✅ Export terminé -> ${file}`);
       process.exit(0);
