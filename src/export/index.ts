@@ -2,6 +2,7 @@
 import ExcelJS from "exceljs";
 import fs from "fs/promises";
 import path from "path";
+import type { Prisma } from "@prisma/client";
 import { prisma } from "../db/prisma";
 import { logger } from "../utils/logger"; // si vous n'avez pas ce logger, remplacez par console
 
@@ -53,7 +54,10 @@ type CtrLite = {
 
 // ------------------------- Sheets builders -------------------------
 
-async function writeCentersSheet(workbook: ExcelJS.stream.xlsx.WorkbookWriter) {
+async function writeCentersSheet(
+  workbook: ExcelJS.stream.xlsx.WorkbookWriter,
+  options: Pick<ExportOptions, "createdAfter"> = {}
+) {
   const ws = workbook.addWorksheet("Centres", {
     properties: { tabColor: { argb: "FF1F497D" } },
     views: [{ state: "frozen", ySplit: 1 }],
@@ -90,9 +94,16 @@ async function writeCentersSheet(workbook: ExcelJS.stream.xlsx.WorkbookWriter) {
   };
 
   // Precompute counts per center
+  const trainingCountWhere: Prisma.TrainingWhereInput | undefined =
+    options.createdAfter
+      ? {
+          createdAt: { gte: options.createdAfter },
+        }
+      : undefined;
   const counts = await prisma.training.groupBy({
     by: ["centerId"],
     _count: { _all: true },
+    ...(trainingCountWhere ? { where: trainingCountWhere } : {}),
   });
   const countMap = new Map<number, number>();
   counts.forEach((c) => countMap.set(c.centerId, c._count._all));
@@ -103,8 +114,16 @@ async function writeCentersSheet(workbook: ExcelJS.stream.xlsx.WorkbookWriter) {
   let total = 0;
 
   for (;;) {
+    const baseWhere: Prisma.TrainingCenterWhereInput = options.createdAfter
+      ? { createdAt: { gte: options.createdAfter } }
+      : {};
+    const where: Prisma.TrainingCenterWhereInput = {
+      ...baseWhere,
+      ...(lastId ? { id: { gt: lastId } } : {}),
+    };
+
     const centers = await prisma.trainingCenter.findMany({
-      where: lastId ? { id: { gt: lastId } } : {},
+      where,
       orderBy: { id: "asc" },
       take: PAGE_SIZE,
       select: {
@@ -199,7 +218,8 @@ async function writeCentersSheet(workbook: ExcelJS.stream.xlsx.WorkbookWriter) {
 }
 
 async function writeTrainingsSheet(
-  workbook: ExcelJS.stream.xlsx.WorkbookWriter
+  workbook: ExcelJS.stream.xlsx.WorkbookWriter,
+  options: Pick<ExportOptions, "createdAfter"> = {}
 ) {
   const ws = workbook.addWorksheet("Formations", {
     properties: { tabColor: { argb: "FF8064A2" } },
@@ -241,8 +261,16 @@ async function writeTrainingsSheet(
   let total = 0;
 
   for (;;) {
+    const baseWhere: Prisma.TrainingWhereInput = options.createdAfter
+      ? { createdAt: { gte: options.createdAfter } }
+      : {};
+    const where: Prisma.TrainingWhereInput = {
+      ...baseWhere,
+      ...(lastId ? { id: { gt: lastId } } : {}),
+    };
+
     const trainings = await prisma.training.findMany({
-      where: lastId ? { id: { gt: lastId } } : {},
+      where,
       orderBy: { id: "asc" },
       take: PAGE_SIZE,
       select: {
@@ -364,7 +392,10 @@ async function writeTrainingsSheet(
   ws.commit();
 }
 
-async function writeSummarySheet(workbook: ExcelJS.stream.xlsx.WorkbookWriter) {
+async function writeSummarySheet(
+  workbook: ExcelJS.stream.xlsx.WorkbookWriter,
+  options: Pick<ExportOptions, "createdAfter"> = {}
+) {
   const ws = workbook.addWorksheet("Résumé", {
     properties: { tabColor: { argb: "FF4BACC6" } },
     views: [{ state: "frozen", ySplit: 1 }],
@@ -381,14 +412,29 @@ async function writeSummarySheet(workbook: ExcelJS.stream.xlsx.WorkbookWriter) {
   };
 
   // Aggregates
+  const centerWhere: Prisma.TrainingCenterWhereInput | undefined =
+    options.createdAfter
+      ? {
+          createdAt: { gte: options.createdAfter },
+        }
+      : undefined;
+  const trainingWhere: Prisma.TrainingWhereInput | undefined =
+    options.createdAfter
+      ? {
+          createdAt: { gte: options.createdAfter },
+        }
+      : undefined;
+
   const centersByRegion = await prisma.trainingCenter.groupBy({
     by: ["region"],
     _count: { _all: true },
+    ...(centerWhere ? { where: centerWhere } : {}),
   });
 
   const trainingsByRegion = await prisma.training.groupBy({
     by: ["region"],
     _count: { _all: true },
+    ...(trainingWhere ? { where: trainingWhere } : {}),
   });
 
   const mapCenters = new Map<string | null, number>();
@@ -428,6 +474,7 @@ async function writeSummarySheet(workbook: ExcelJS.stream.xlsx.WorkbookWriter) {
 
 type ExportOptions = {
   includeTrainings?: boolean;
+  createdAfter?: Date;
 };
 
 export async function exportToExcel(
@@ -442,13 +489,13 @@ export async function exportToExcel(
   });
 
   try {
-    await writeCentersSheet(workbook);
+    await writeCentersSheet(workbook, options);
     if (options.includeTrainings ?? true) {
-      await writeTrainingsSheet(workbook);
+      await writeTrainingsSheet(workbook, options);
     } else {
       logger.info?.("Export ⇒ feuille Formations ignorée (--centers-only)");
     }
-    await writeSummarySheet(workbook);
+    await writeSummarySheet(workbook, options);
 
     await workbook.commit();
     logger.info?.(`Export Excel écrit: ${OUTPUT_PATH}`);
@@ -476,7 +523,44 @@ if (require.main === module) {
   const centersOnly =
     args.includes("--centers-only") || args.includes("--centres-only");
 
-  exportToExcel({ includeTrainings: !centersOnly })
+  let createdAfter: Date | undefined;
+  const directArg = args.find((arg) => arg.startsWith("--created-after="));
+  if (directArg) {
+    const value = directArg.split("=")[1];
+    if (value) {
+      const parsed = new Date(value);
+      if (!Number.isNaN(parsed.getTime())) {
+        createdAfter = parsed;
+      } else {
+        logger.error?.(`❌ Date invalide pour --created-after: ${value}`);
+        process.exit(1);
+      }
+    }
+  } else {
+    const index = args.findIndex((arg) => arg === "--created-after");
+    if (index !== -1) {
+      const value = args[index + 1];
+      if (!value) {
+        logger.error?.("❌ Argument manquant après --created-after");
+        process.exit(1);
+      }
+      const parsed = new Date(value);
+      if (!Number.isNaN(parsed.getTime())) {
+        createdAfter = parsed;
+      } else {
+        logger.error?.(`❌ Date invalide pour --created-after: ${value}`);
+        process.exit(1);
+      }
+    }
+  }
+
+  if (createdAfter) {
+    logger.info?.(
+      `Export ⇒ filtre createdAfter activé (${createdAfter.toISOString()})`
+    );
+  }
+
+  exportToExcel({ includeTrainings: !centersOnly, createdAfter })
     .then((file) => {
       logger.info?.(`✅ Export terminé -> ${file}`);
       process.exit(0);
