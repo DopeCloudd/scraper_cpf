@@ -25,4 +25,4 @@ REM Log startup
 echo [%DATE% %TIME%] Démarrage du scraper CPF >> log.txt
 
 REM Run the extraction process and append output to the log
-"%NODE_PATH%\npm.cmd" run extract -- --city paris >> log.txt 2>&1
+"%NODE_PATH%\npm.cmd" run extract -- --city marseille lyon lille toulouse >> log.txt 2>&1
