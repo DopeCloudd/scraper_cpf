@@ -40,6 +40,70 @@ const ensureDir = async (dir: string) => {
   }
 };
 
+const isNonEmptyString = (value: string | null | undefined): boolean =>
+  typeof value === "string" && value.trim().length > 0;
+
+type CenterContactInfo = {
+  siren: string | null;
+  siret: string | null;
+  city: string | null;
+  email: string | null;
+  phone: string | null;
+  website: string | null;
+};
+
+const isCenterClean = (center: CenterContactInfo): boolean =>
+  isNonEmptyString(center.siren) &&
+  isNonEmptyString(center.siret) &&
+  isNonEmptyString(center.city) &&
+  isNonEmptyString(center.email) &&
+  (isNonEmptyString(center.phone) || isNonEmptyString(center.website));
+
+const buildCleanCenterWhere = (): Prisma.TrainingCenterWhereInput => ({
+  AND: [
+    { siren: { not: null } },
+    { siren: { not: "" } },
+    { siret: { not: null } },
+    { siret: { not: "" } },
+    { city: { not: null } },
+    { city: { not: "" } },
+    { email: { not: null } },
+    { email: { not: "" } },
+    {
+      OR: [
+        {
+          AND: [{ phone: { not: null } }, { phone: { not: "" } }],
+        },
+        {
+          AND: [{ website: { not: null } }, { website: { not: "" } }],
+        },
+      ],
+    },
+  ],
+});
+
+const combineCenterWhere = (
+  clauses: Array<Prisma.TrainingCenterWhereInput | undefined>
+): Prisma.TrainingCenterWhereInput | undefined => {
+  const filtered = clauses.filter(
+    (clause): clause is Prisma.TrainingCenterWhereInput => clause != null
+  );
+  if (filtered.length === 0) return undefined;
+  if (filtered.length === 1) return filtered[0];
+  return { AND: filtered };
+};
+
+const combineTrainingWhere = (
+  clauses: Array<Prisma.TrainingWhereInput | undefined>
+): Prisma.TrainingWhereInput | undefined => {
+  const filtered = clauses.filter(
+    (clause): clause is Prisma.TrainingWhereInput => clause != null
+  );
+  if (filtered.length === 0) return undefined;
+  if (filtered.length === 1) return filtered[0];
+  return { AND: filtered };
+};
+
 type CtrLite = {
   id: number;
   name: string;
@@ -56,7 +120,7 @@ type CtrLite = {
 
 async function writeCentersSheet(
   workbook: ExcelJS.stream.xlsx.WorkbookWriter,
-  options: Pick<ExportOptions, "createdAfter"> = {}
+  options: Pick<ExportOptions, "createdAfter" | "cleanOnly"> = {}
 ) {
   const ws = workbook.addWorksheet("Centres", {
     properties: { tabColor: { argb: "FF1F497D" } },
@@ -95,11 +159,14 @@ async function writeCentersSheet(
 
   // Precompute counts per center
   const trainingCountWhere: Prisma.TrainingWhereInput | undefined =
-    options.createdAfter
-      ? {
-          createdAt: { gte: options.createdAfter },
-        }
-      : undefined;
+    combineTrainingWhere([
+      options.createdAfter
+        ? { createdAt: { gte: options.createdAfter } }
+        : undefined,
+      options.cleanOnly
+        ? { center: { is: buildCleanCenterWhere() } }
+        : undefined,
+    ]);
   const counts = await prisma.training.groupBy({
     by: ["centerId"],
     _count: { _all: true },
@@ -114,13 +181,13 @@ async function writeCentersSheet(
   let total = 0;
 
   for (;;) {
-    const baseWhere: Prisma.TrainingCenterWhereInput = options.createdAfter
-      ? { createdAt: { gte: options.createdAfter } }
-      : {};
-    const where: Prisma.TrainingCenterWhereInput = {
-      ...baseWhere,
-      ...(lastId ? { id: { gt: lastId } } : {}),
-    };
+    const where = combineCenterWhere([
+      options.cleanOnly ? buildCleanCenterWhere() : undefined,
+      options.createdAfter
+        ? { createdAt: { gte: options.createdAfter } }
+        : undefined,
+      lastId ? { id: { gt: lastId } } : undefined,
+    ]);
 
     const centers = await prisma.trainingCenter.findMany({
       where,
@@ -154,6 +221,9 @@ async function writeCentersSheet(
     page += 1;
 
     for (const c of centers) {
+      if (options.cleanOnly && !isCenterClean(c)) {
+        continue;
+      }
       const row = ws.addRow({
         id: c.id,
         name: c.name,
@@ -219,7 +289,7 @@ async function writeCentersSheet(
 
 async function writeTrainingsSheet(
   workbook: ExcelJS.stream.xlsx.WorkbookWriter,
-  options: Pick<ExportOptions, "createdAfter"> = {}
+  options: Pick<ExportOptions, "createdAfter" | "cleanOnly"> = {}
 ) {
   const ws = workbook.addWorksheet("Formations", {
     properties: { tabColor: { argb: "FF8064A2" } },
@@ -261,13 +331,15 @@ async function writeTrainingsSheet(
   let total = 0;
 
   for (;;) {
-    const baseWhere: Prisma.TrainingWhereInput = options.createdAfter
-      ? { createdAt: { gte: options.createdAfter } }
-      : {};
-    const where: Prisma.TrainingWhereInput = {
-      ...baseWhere,
-      ...(lastId ? { id: { gt: lastId } } : {}),
-    };
+    const where = combineTrainingWhere([
+      options.createdAfter
+        ? { createdAt: { gte: options.createdAfter } }
+        : undefined,
+      options.cleanOnly
+        ? { center: { is: buildCleanCenterWhere() } }
+        : undefined,
+      lastId ? { id: { gt: lastId } } : undefined,
+    ]);
 
     const trainings = await prisma.training.findMany({
       where,
@@ -304,10 +376,23 @@ async function writeTrainingsSheet(
     const centerIds = Array.from(new Set(trainings.map((t) => t.centerId)));
     const centers = await prisma.trainingCenter.findMany({
       where: { id: { in: centerIds } },
-      select: { id: true, name: true, city: true },
+      select: {
+        id: true,
+        name: true,
+        city: true,
+        siren: true,
+        siret: true,
+        email: true,
+        phone: true,
+        website: true,
+      },
     });
     const centerMap = new Map<number, CtrLite>();
-    centers.forEach((c) =>
+    const cleanCenters = new Set<number>();
+    centers.forEach((c) => {
+      if (!options.cleanOnly || isCenterClean(c)) {
+        cleanCenters.add(c.id);
+      }
       centerMap.set(c.id, {
         id: c.id,
         name: c.name,
@@ -315,13 +400,16 @@ async function writeTrainingsSheet(
         postalCode: null,
         region: null,
         country: null,
-        website: null,
-        email: null,
-        phone: null,
-      })
-    );
+        website: c.website,
+        email: c.email,
+        phone: c.phone,
+      });
+    });
 
     for (const t of trainings) {
+      if (options.cleanOnly && !cleanCenters.has(t.centerId)) {
+        continue;
+      }
       const center = centerMap.get(t.centerId);
       const priceNum = toNumberSafe(t.priceValue);
 
@@ -394,7 +482,7 @@ async function writeTrainingsSheet(
 
 async function writeSummarySheet(
   workbook: ExcelJS.stream.xlsx.WorkbookWriter,
-  options: Pick<ExportOptions, "createdAfter"> = {}
+  options: Pick<ExportOptions, "createdAfter" | "cleanOnly"> = {}
 ) {
   const ws = workbook.addWorksheet("Résumé", {
     properties: { tabColor: { argb: "FF4BACC6" } },
@@ -413,17 +501,21 @@ async function writeSummarySheet(
 
   // Aggregates
   const centerWhere: Prisma.TrainingCenterWhereInput | undefined =
-    options.createdAfter
-      ? {
-          createdAt: { gte: options.createdAfter },
-        }
-      : undefined;
+    combineCenterWhere([
+      options.cleanOnly ? buildCleanCenterWhere() : undefined,
+      options.createdAfter
+        ? { createdAt: { gte: options.createdAfter } }
+        : undefined,
+    ]);
   const trainingWhere: Prisma.TrainingWhereInput | undefined =
-    options.createdAfter
-      ? {
-          createdAt: { gte: options.createdAfter },
-        }
-      : undefined;
+    combineTrainingWhere([
+      options.createdAfter
+        ? { createdAt: { gte: options.createdAfter } }
+        : undefined,
+      options.cleanOnly
+        ? { center: { is: buildCleanCenterWhere() } }
+        : undefined,
+    ]);
 
   const centersByRegion = await prisma.trainingCenter.groupBy({
     by: ["region"],
@@ -475,6 +567,7 @@ async function writeSummarySheet(
 type ExportOptions = {
   includeTrainings?: boolean;
   createdAfter?: Date;
+  cleanOnly?: boolean;
 };
 
 export async function exportToExcel(
@@ -560,7 +653,12 @@ if (require.main === module) {
     );
   }
 
-  exportToExcel({ includeTrainings: !centersOnly, createdAfter })
+  const cleanOnly = args.includes("--clean") || args.includes("--clean-list");
+  if (cleanOnly) {
+    logger.info?.("Export ⇒ filtre clean-only activé");
+  }
+
+  exportToExcel({ includeTrainings: !centersOnly, createdAfter, cleanOnly })
     .then((file) => {
       logger.info?.(`✅ Export terminé -> ${file}`);
       process.exit(0);
