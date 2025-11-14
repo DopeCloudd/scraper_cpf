@@ -9,8 +9,15 @@ import { logger } from "../utils/logger"; // si vous n'avez pas ce logger, rempl
 // ------------------------- Config export -------------------------
 const EXPORT_DIR = process.env.EXPORT_DIR ?? "exports";
 const TIMESTAMP = new Date().toISOString().replace(/[:.]/g, "-");
-const OUTPUT_PATH = path.join(EXPORT_DIR, `export_mcf_${TIMESTAMP}.xlsx`);
 const PAGE_SIZE = Number(process.env.EXPORT_PAGE_SIZE ?? 1000); // pagination DB
+const MAX_FILE_SIZE_BYTES = (() => {
+  const raw = Number(process.env.EXPORT_MAX_FILE_SIZE_BYTES ?? 1024 * 1024);
+  return Number.isFinite(raw) && raw > 0 ? raw : 1024 * 1024;
+})();
+const DEFAULT_CENTER_CHUNK_SIZE = (() => {
+  const raw = Number(process.env.EXPORT_CENTERS_PER_CHUNK ?? 500);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 500;
+})();
 
 // Formats Excel
 const DATE_FMT = "yyyy-mm-dd hh:mm";
@@ -151,6 +158,39 @@ const chunkArray = <T>(values: T[], chunkSize: number): T[][] => {
   return chunks;
 };
 
+const sanitizeForFilename = (value: string): string => {
+  const normalized = value
+    .normalize("NFD")
+    .replace(/\p{Diacritic}+/gu, "")
+    .replace(/[^a-z0-9]+/gi, "_")
+    .replace(/^_+|_+$/g, "")
+    .toLowerCase();
+  return normalized || "export";
+};
+
+const formatBytes = (value: number): string => {
+  if (!Number.isFinite(value)) return `${value}`;
+  if (value < 1024) return `${value} o`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} Ko`;
+  return `${(value / (1024 * 1024)).toFixed(2)} Mo`;
+};
+
+const safeUnlink = async (targetPath: string): Promise<void> => {
+  try {
+    await fs.unlink(targetPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw error;
+    }
+  }
+};
+
+const createTempFilePath = (baseName: string): string =>
+  path.join(
+    EXPORT_DIR,
+    `${baseName}_${Date.now()}_${Math.random().toString(36).slice(2)}.tmp.xlsx`
+  );
+
 const collectTitleFilterMatches = async (
   filter: TitleFilter,
   options: Pick<ExportOptions, "createdAfter" | "cleanOnly">
@@ -214,6 +254,8 @@ type SheetOptions = {
   createdAfter?: Date;
   cleanOnly?: boolean;
   titleFilterMatches?: TitleFilterMatches;
+  centerIdFilter?: number[];
+  trainingIdsFilter?: number[];
 };
 
 // ------------------------- Sheets builders -------------------------
@@ -260,8 +302,23 @@ async function writeCentersSheet(
 
   const matchedCenterIds = options.titleFilterMatches?.centerIds;
   const matchedTrainingIds = options.titleFilterMatches?.trainingIds;
+  const chunkCenterIds = options.centerIdFilter;
+  const chunkCenterSet = chunkCenterIds
+    ? new Set(chunkCenterIds)
+    : undefined;
+  const effectiveMatchedCenterIds = matchedCenterIds
+    ? chunkCenterSet
+      ? matchedCenterIds.filter((id) => chunkCenterSet.has(id))
+      : matchedCenterIds
+    : undefined;
 
-  if (matchedCenterIds && matchedCenterIds.length === 0) {
+  if (chunkCenterIds && chunkCenterIds.length === 0) {
+    logger.info?.("Centres: chunk vide, aucune ligne à écrire");
+    ws.commit();
+    return;
+  }
+
+  if (effectiveMatchedCenterIds && effectiveMatchedCenterIds.length === 0) {
     logger.info?.("Centres: aucun centre pour le filtre de titre fourni");
     ws.commit();
     return;
@@ -277,6 +334,10 @@ async function writeCentersSheet(
         ? { center: { is: buildCleanCenterWhere() } }
         : undefined,
       matchedTrainingIds ? { id: { in: matchedTrainingIds } } : undefined,
+      chunkCenterIds ? { centerId: { in: chunkCenterIds } } : undefined,
+      options.trainingIdsFilter
+        ? { id: { in: options.trainingIdsFilter } }
+        : undefined,
     ]);
   const counts = await prisma.training.groupBy({
     by: ["centerId"],
@@ -372,8 +433,8 @@ async function writeCentersSheet(
   };
 
   // Stream centers by pages
-  if (matchedCenterIds) {
-    const batches = chunkArray(matchedCenterIds, PAGE_SIZE);
+  if (effectiveMatchedCenterIds) {
+    const batches = chunkArray(effectiveMatchedCenterIds, PAGE_SIZE);
     for (const batch of batches) {
       const centers = await prisma.trainingCenter.findMany({
         where: combineCenterWhere([
@@ -422,6 +483,9 @@ async function writeCentersSheet(
           ? { createdAt: { gte: options.createdAfter } }
           : undefined,
         lastId ? { id: { gt: lastId } } : undefined,
+        options.centerIdFilter
+          ? { id: { in: options.centerIdFilter } }
+          : undefined,
       ]);
 
       const centers = await prisma.trainingCenter.findMany({
@@ -506,8 +570,25 @@ async function writeTrainingsSheet(
   };
 
   const matchedTrainingIds = options.titleFilterMatches?.trainingIds;
-  if (matchedTrainingIds && matchedTrainingIds.length === 0) {
-    logger.info?.("Formations: aucune formation ne correspond au filtre de titre");
+  const chunkTrainingIds = options.trainingIdsFilter;
+  const chunkTrainingSet = chunkTrainingIds
+    ? new Set(chunkTrainingIds)
+    : undefined;
+  const chunkCenterIds = options.centerIdFilter;
+  const effectiveMatchedTrainingIds = matchedTrainingIds
+    ? chunkTrainingSet
+      ? matchedTrainingIds.filter((id) => chunkTrainingSet.has(id))
+      : matchedTrainingIds
+    : undefined;
+
+  if (
+    (effectiveMatchedTrainingIds &&
+      effectiveMatchedTrainingIds.length === 0) ||
+    (chunkTrainingIds &&
+      chunkTrainingIds.length === 0 &&
+      !effectiveMatchedTrainingIds)
+  ) {
+    logger.info?.("Formations: chunk vide, aucune ligne à écrire");
     ws.commit();
     return;
   }
@@ -641,11 +722,22 @@ async function writeTrainingsSheet(
     }
   };
 
-  if (matchedTrainingIds) {
-    const batches = chunkArray(matchedTrainingIds, PAGE_SIZE);
+  if (effectiveMatchedTrainingIds) {
+    const batches = chunkArray(effectiveMatchedTrainingIds, PAGE_SIZE);
     for (const batch of batches) {
       const trainings = await prisma.training.findMany({
-        where: { id: { in: batch } },
+        where: combineTrainingWhere([
+          { id: { in: batch } },
+          options.createdAfter
+            ? { createdAt: { gte: options.createdAfter } }
+            : undefined,
+          options.cleanOnly
+            ? { center: { is: buildCleanCenterWhere() } }
+            : undefined,
+          chunkCenterIds
+            ? { centerId: { in: chunkCenterIds } }
+            : undefined,
+        ]),
         orderBy: { id: "asc" },
         select: {
           id: true,
@@ -676,6 +768,52 @@ async function writeTrainingsSheet(
       await writeTrainingsBatch(trainings);
       logger.info?.(`Formations filtrées: page ${page}, cumul ${total}`);
     }
+  } else if (chunkTrainingIds && chunkTrainingIds.length > 0) {
+    const batches = chunkArray(chunkTrainingIds, PAGE_SIZE);
+    for (const batch of batches) {
+      const trainings = await prisma.training.findMany({
+        where: combineTrainingWhere([
+          { id: { in: batch } },
+          options.createdAfter
+            ? { createdAt: { gte: options.createdAfter } }
+            : undefined,
+          options.cleanOnly
+            ? { center: { is: buildCleanCenterWhere() } }
+            : undefined,
+          chunkCenterIds
+            ? { centerId: { in: chunkCenterIds } }
+            : undefined,
+        ]),
+        orderBy: { id: "asc" },
+        select: {
+          id: true,
+          centerId: true,
+          title: true,
+          detailUrl: true,
+          summary: true,
+          modality: true,
+          certification: true,
+          locationText: true,
+          region: true,
+          priceText: true,
+          priceValue: true,
+          durationText: true,
+          durationHours: true,
+          startDate: true,
+          endDate: true,
+          searchQuery: true,
+          lastListScrapedAt: true,
+          lastDetailScrapedAt: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      });
+
+      if (trainings.length === 0) continue;
+      page += 1;
+      await writeTrainingsBatch(trainings);
+      logger.info?.(`Formations chunk: page ${page}, cumul ${total}`);
+    }
   } else {
     for (;;) {
       const where = combineTrainingWhere([
@@ -686,6 +824,12 @@ async function writeTrainingsSheet(
           ? { center: { is: buildCleanCenterWhere() } }
           : undefined,
         lastId ? { id: { gt: lastId } } : undefined,
+        chunkCenterIds
+          ? { centerId: { in: chunkCenterIds } }
+          : undefined,
+        chunkTrainingIds
+          ? { id: { in: chunkTrainingIds } }
+          : undefined,
       ]);
 
       const trainings = await prisma.training.findMany({
@@ -758,6 +902,9 @@ async function writeSummarySheet(
       options.titleFilterMatches
         ? { id: { in: options.titleFilterMatches.centerIds } }
         : undefined,
+      options.centerIdFilter
+        ? { id: { in: options.centerIdFilter } }
+        : undefined,
     ]);
   const trainingWhere: Prisma.TrainingWhereInput | undefined =
     combineTrainingWhere([
@@ -769,6 +916,12 @@ async function writeSummarySheet(
         : undefined,
       options.titleFilterMatches
         ? { id: { in: options.titleFilterMatches.trainingIds } }
+        : undefined,
+      options.centerIdFilter
+        ? { centerId: { in: options.centerIdFilter } }
+        : undefined,
+      options.trainingIdsFilter
+        ? { id: { in: options.trainingIdsFilter } }
         : undefined,
     ]);
 
@@ -819,6 +972,292 @@ async function writeSummarySheet(
 
 // ------------------------- Main -------------------------
 
+const buildBaseFileName = (titleFilter?: TitleFilter): string => {
+  if (titleFilter) {
+    return `export_cpf_${sanitizeForFilename(titleFilter.raw)}`;
+  }
+  return `export_mcf_${TIMESTAMP}`;
+};
+
+const buildChunkLabel = (centerIds: number[], index: number): string => {
+  if (centerIds.length === 0) return `chunk-${index} (vide)`;
+  if (centerIds.length === 1) {
+    return `chunk-${index} (centre ${centerIds[0]})`;
+  }
+  const first = centerIds[0];
+  const last = centerIds[centerIds.length - 1];
+  return `chunk-${index} (centres ${first}-${last})`;
+};
+
+type FileAllocator = {
+  registerFinalFile: (tempPath: string) => Promise<string>;
+  getFiles: () => string[];
+};
+
+const createFileAllocator = (baseName: string): FileAllocator => {
+  const files: string[] = [];
+  let partMode = false;
+
+  return {
+    getFiles: () => [...files],
+    async registerFinalFile(tempPath: string) {
+      const nextIndex = files.length + 1;
+      if (nextIndex === 1 && !partMode) {
+        const targetPath = path.join(EXPORT_DIR, `${baseName}.xlsx`);
+        await safeUnlink(targetPath);
+        await fs.rename(tempPath, targetPath);
+        files.push(targetPath);
+        return targetPath;
+      }
+
+      if (!partMode) {
+        partMode = true;
+        const renamedFirst = path.join(EXPORT_DIR, `${baseName}_part1.xlsx`);
+        await safeUnlink(renamedFirst);
+        const previous = files[0];
+        await fs.rename(previous, renamedFirst);
+        files[0] = renamedFirst;
+      }
+
+      const targetPath = path.join(
+        EXPORT_DIR,
+        `${baseName}_part${nextIndex}.xlsx`
+      );
+      await safeUnlink(targetPath);
+      await fs.rename(tempPath, targetPath);
+      files.push(targetPath);
+      return targetPath;
+    },
+  };
+};
+
+type ChunkJob = {
+  centerIds: number[];
+  trainingIds?: number[];
+  label?: string;
+};
+
+type ChunkContext = {
+  baseOptions: SheetOptions;
+  includeTrainings: boolean;
+  allocator: FileAllocator;
+  baseFileName: string;
+};
+
+const writeWorkbookToPath = async (
+  filename: string,
+  sheetOptions: SheetOptions,
+  includeTrainings: boolean
+): Promise<void> => {
+  const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+    filename,
+    useStyles: true,
+    useSharedStrings: true,
+  });
+
+  try {
+    await writeCentersSheet(workbook, sheetOptions);
+    if (includeTrainings) {
+      await writeTrainingsSheet(workbook, sheetOptions);
+    } else {
+      logger.info?.("Export ⇒ feuille Formations ignorée (--centers-only)");
+    }
+    await writeSummarySheet(workbook, sheetOptions);
+    await workbook.commit();
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    logger.error?.(`Export Excel échoué: ${errorMessage}`);
+    try {
+      await workbook.commit();
+    } catch (commitError) {
+      logger.error?.(
+        `Erreur lors de la fermeture du workbook: ${commitError instanceof Error ? commitError.message : String(commitError)}`
+      );
+    }
+    throw error;
+  }
+};
+
+const collectCenterIdsForExport = async (
+  options: SheetOptions
+): Promise<number[]> => {
+  if (options.titleFilterMatches) {
+    return options.titleFilterMatches.centerIds;
+  }
+
+  const ids: number[] = [];
+  let lastId: number | undefined;
+  for (;;) {
+    const where = combineCenterWhere([
+      options.cleanOnly ? buildCleanCenterWhere() : undefined,
+      options.createdAfter
+        ? { createdAt: { gte: options.createdAfter } }
+        : undefined,
+      lastId ? { id: { gt: lastId } } : undefined,
+    ]);
+
+    const centers = await prisma.trainingCenter.findMany({
+      where,
+      orderBy: { id: "asc" },
+      take: PAGE_SIZE,
+      select: { id: true },
+    });
+
+    if (centers.length === 0) break;
+    centers.forEach((c) => ids.push(c.id));
+    lastId = centers[centers.length - 1].id;
+    if (centers.length < PAGE_SIZE) break;
+  }
+
+  return ids;
+};
+
+const collectTrainingIdsForCenter = async (
+  centerId: number,
+  options: SheetOptions
+): Promise<number[]> => {
+  const ids: number[] = [];
+  let lastId: number | undefined;
+
+  for (;;) {
+    const where = combineTrainingWhere([
+      options.createdAfter
+        ? { createdAt: { gte: options.createdAfter } }
+        : undefined,
+      options.cleanOnly
+        ? { center: { is: buildCleanCenterWhere() } }
+        : undefined,
+      options.titleFilterMatches
+        ? { id: { in: options.titleFilterMatches.trainingIds } }
+        : undefined,
+      { centerId },
+      lastId ? { id: { gt: lastId } } : undefined,
+    ]);
+
+    const trainings = await prisma.training.findMany({
+      where,
+      orderBy: { id: "asc" },
+      take: PAGE_SIZE,
+      select: { id: true },
+    });
+
+    if (trainings.length === 0) break;
+    trainings.forEach((t) => ids.push(t.id));
+    lastId = trainings[trainings.length - 1].id;
+    if (trainings.length < PAGE_SIZE) break;
+  }
+
+  return ids;
+};
+
+const exportChunkJob = async (
+  job: ChunkJob,
+  ctx: ChunkContext
+): Promise<void> => {
+  const chunkOptions: SheetOptions = {
+    ...ctx.baseOptions,
+    centerIdFilter: job.centerIds,
+    trainingIdsFilter: job.trainingIds,
+  };
+
+  const tempPath = createTempFilePath(ctx.baseFileName);
+  await writeWorkbookToPath(tempPath, chunkOptions, ctx.includeTrainings);
+  const stats = await fs.stat(tempPath);
+
+  if (stats.size <= MAX_FILE_SIZE_BYTES) {
+    const finalPath = await ctx.allocator.registerFinalFile(tempPath);
+    logger.info?.(
+      `Export ⇒ ${job.label ?? "chunk"} validé (${formatBytes(stats.size)}) -> ${finalPath}`
+    );
+    return;
+  }
+
+  await safeUnlink(tempPath);
+  const readableSize = formatBytes(stats.size);
+  logger.warn?.(
+    `Export ⇒ ${job.label ?? "chunk"} trop volumineux (${readableSize}), division en cours`
+  );
+
+  if (job.trainingIds && job.trainingIds.length > 1) {
+    const mid = Math.ceil(job.trainingIds.length / 2);
+    await exportChunkJob(
+      {
+        centerIds: job.centerIds,
+        trainingIds: job.trainingIds.slice(0, mid),
+        label: `${job.label ?? "chunk"} (formations A)`,
+      },
+      ctx
+    );
+    await exportChunkJob(
+      {
+        centerIds: job.centerIds,
+        trainingIds: job.trainingIds.slice(mid),
+        label: `${job.label ?? "chunk"} (formations B)`,
+      },
+      ctx
+    );
+    return;
+  }
+
+  if (job.centerIds.length > 1) {
+    const mid = Math.ceil(job.centerIds.length / 2);
+    await exportChunkJob(
+      {
+        centerIds: job.centerIds.slice(0, mid),
+        label: `${job.label ?? "chunk"} (part 1)`,
+      },
+      ctx
+    );
+    await exportChunkJob(
+      {
+        centerIds: job.centerIds.slice(mid),
+        label: `${job.label ?? "chunk"} (part 2)`,
+      },
+      ctx
+    );
+    return;
+  }
+
+  if (!ctx.includeTrainings) {
+    throw new Error(
+      `Impossible de réduire davantage ${job.label ?? "le chunk"} sans formations`
+    );
+  }
+
+  const centerId = job.centerIds[0];
+  if (!centerId) {
+    throw new Error("Chunk vide impossible à réduire davantage");
+  }
+
+  const allTrainingIds =
+    job.trainingIds ??
+    (await collectTrainingIdsForCenter(centerId, ctx.baseOptions));
+
+  if (allTrainingIds.length <= 1) {
+    throw new Error(
+      `Impossible de générer un fichier < ${formatBytes(MAX_FILE_SIZE_BYTES)} pour le centre ${centerId}`
+    );
+  }
+
+  const mid = Math.ceil(allTrainingIds.length / 2);
+  await exportChunkJob(
+    {
+      centerIds: [centerId],
+      trainingIds: allTrainingIds.slice(0, mid),
+      label: `${job.label ?? `centre ${centerId}`} (formations 1)`,
+    },
+    ctx
+  );
+  await exportChunkJob(
+    {
+      centerIds: [centerId],
+      trainingIds: allTrainingIds.slice(mid),
+      label: `${job.label ?? `centre ${centerId}`} (formations 2)`,
+    },
+    ctx
+  );
+};
+
 type ExportOptions = {
   includeTrainings?: boolean;
   createdAfter?: Date;
@@ -828,7 +1267,7 @@ type ExportOptions = {
 
 export async function exportToExcel(
   options: ExportOptions = {}
-): Promise<string> {
+): Promise<string[]> {
   await ensureDir(EXPORT_DIR);
 
   let titleFilterMatches: TitleFilterMatches | undefined;
@@ -851,45 +1290,55 @@ export async function exportToExcel(
     }
   }
 
-  const sheetOptions: SheetOptions = {
+  const baseOptions: SheetOptions = {
     createdAfter: options.createdAfter,
     cleanOnly: options.cleanOnly,
     titleFilterMatches,
   };
 
-  const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
-    filename: OUTPUT_PATH,
-    useStyles: true,
-    useSharedStrings: true,
-  });
+  const includeTrainings = options.includeTrainings ?? true;
+  const baseFileName = buildBaseFileName(options.titleFilter);
+  const allocator = createFileAllocator(baseFileName);
+  const centerIds = await collectCenterIdsForExport(baseOptions);
 
-  try {
-    await writeCentersSheet(workbook, sheetOptions);
-    if (options.includeTrainings ?? true) {
-      await writeTrainingsSheet(workbook, sheetOptions);
-    } else {
-      logger.info?.("Export ⇒ feuille Formations ignorée (--centers-only)");
-    }
-    await writeSummarySheet(workbook, sheetOptions);
+  logger.info?.(
+    `Export ⇒ ${centerIds.length} centre(s) à exporter${includeTrainings ? "" : " (centres uniquement)"}`
+  );
 
-    await workbook.commit();
-    logger.info?.(`Export Excel écrit: ${OUTPUT_PATH}`);
-    return OUTPUT_PATH;
-  } catch (e) {
-    const errorMessage = e instanceof Error ? e.message : String(e);
-    logger.error?.(`Export Excel échoué: ${errorMessage}`);
-    // important: close writer properly
-    try {
-      await workbook.commit();
-    } catch (commitError) {
-      logger.error?.(
-        `Erreur lors de la fermeture du workbook: ${commitError instanceof Error ? commitError.message : String(commitError)}`
-      );
-    }
-    throw e;
-  } finally {
-    // pas de prisma.$disconnect() ici pour laisser l'app gérer son cycle
+  const centerChunks =
+    centerIds.length > 0
+      ? chunkArray(centerIds, DEFAULT_CENTER_CHUNK_SIZE)
+      : [[]];
+
+  const ctx: ChunkContext = {
+    baseOptions,
+    includeTrainings,
+    allocator,
+    baseFileName,
+  };
+
+  let chunkIndex = 0;
+  for (const chunk of centerChunks) {
+    chunkIndex += 1;
+    await exportChunkJob(
+      {
+        centerIds: chunk,
+        label: buildChunkLabel(chunk, chunkIndex),
+      },
+      ctx
+    );
   }
+
+  const files = allocator.getFiles();
+  if (files.length === 0) {
+    throw new Error("Aucun fichier export généré");
+  }
+
+  logger.info?.(
+    `Export ⇒ ${files.length} fichier(s) généré(s) (max ${formatBytes(MAX_FILE_SIZE_BYTES)} chacun)`
+  );
+
+  return files;
 }
 
 // Exécutable direct (ts-node src/scripts/export-excel.ts)
@@ -977,8 +1426,10 @@ if (require.main === module) {
     cleanOnly,
     titleFilter,
   })
-    .then((file) => {
-      logger.info?.(`✅ Export terminé -> ${file}`);
+    .then((files) => {
+      files.forEach((file) =>
+        logger.info?.(`✅ Export terminé -> ${file}`)
+      );
       process.exit(0);
     })
     .catch((err) => {
