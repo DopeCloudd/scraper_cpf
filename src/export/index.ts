@@ -1042,6 +1042,7 @@ type ChunkContext = {
   includeTrainings: boolean;
   allocator: FileAllocator;
   baseFileName: string;
+  forceSingleFile: boolean;
 };
 
 const writeWorkbookToPath = async (
@@ -1164,6 +1165,14 @@ const exportChunkJob = async (
   await writeWorkbookToPath(tempPath, chunkOptions, ctx.includeTrainings);
   const stats = await fs.stat(tempPath);
 
+  if (ctx.forceSingleFile) {
+    const finalPath = await ctx.allocator.registerFinalFile(tempPath);
+    logger.info?.(
+      `Export ⇒ ${job.label ?? "chunk"} validé en mode unique (${formatBytes(stats.size)}) -> ${finalPath}`
+    );
+    return;
+  }
+
   if (stats.size <= MAX_FILE_SIZE_BYTES) {
     const finalPath = await ctx.allocator.registerFinalFile(tempPath);
     logger.info?.(
@@ -1263,6 +1272,7 @@ type ExportOptions = {
   createdAfter?: Date;
   cleanOnly?: boolean;
   titleFilter?: TitleFilter;
+  forceSingleFile?: boolean;
 };
 
 export async function exportToExcel(
@@ -1297,6 +1307,7 @@ export async function exportToExcel(
   };
 
   const includeTrainings = options.includeTrainings ?? true;
+  const forceSingleFile = options.forceSingleFile ?? false;
   const baseFileName = buildBaseFileName(options.titleFilter);
   const allocator = createFileAllocator(baseFileName);
   const centerIds = await collectCenterIdsForExport(baseOptions);
@@ -1305,9 +1316,15 @@ export async function exportToExcel(
     `Export ⇒ ${centerIds.length} centre(s) à exporter${includeTrainings ? "" : " (centres uniquement)"}`
   );
 
+  if (forceSingleFile) {
+    logger.info?.("Export ⇒ mode fichier unique activé");
+  }
+
   const centerChunks =
     centerIds.length > 0
-      ? chunkArray(centerIds, DEFAULT_CENTER_CHUNK_SIZE)
+      ? forceSingleFile
+        ? [centerIds]
+        : chunkArray(centerIds, DEFAULT_CENTER_CHUNK_SIZE)
       : [[]];
 
   const ctx: ChunkContext = {
@@ -1315,6 +1332,7 @@ export async function exportToExcel(
     includeTrainings,
     allocator,
     baseFileName,
+    forceSingleFile,
   };
 
   let chunkIndex = 0;
@@ -1346,6 +1364,11 @@ if (require.main === module) {
   const args = process.argv.slice(2);
   const centersOnly =
     args.includes("--centers-only") || args.includes("--centres-only");
+
+  const singleFile = args.includes("--single-file");
+  if (singleFile) {
+    logger.info?.("Export ⇒ option --single-file activée (pas de découpe)");
+  }
 
   let createdAfter: Date | undefined;
   const directArg = args.find((arg) => arg.startsWith("--created-after="));
@@ -1425,6 +1448,7 @@ if (require.main === module) {
     createdAfter,
     cleanOnly,
     titleFilter,
+    forceSingleFile: singleFile,
   })
     .then((files) => {
       files.forEach((file) =>
