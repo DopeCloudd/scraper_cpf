@@ -5,6 +5,7 @@ import { logger } from './utils/logger';
 interface CliOptions {
   queryNames: string[];
   citySlugs: string[];
+  noShuffle: boolean;
   help: boolean;
 }
 
@@ -19,6 +20,7 @@ const parseCli = (): CliOptions => {
   const options: CliOptions = {
     queryNames: [],
     citySlugs: [],
+    noShuffle: false,
     help: false,
   };
 
@@ -28,6 +30,11 @@ const parseCli = (): CliOptions => {
     if (arg === '--help' || arg === '-h') {
       options.help = true;
       break;
+    }
+
+    if (arg === '--no-shuffle') {
+      options.noShuffle = true;
+      continue;
     }
 
     if (arg.startsWith('--query=')) {
@@ -87,7 +94,7 @@ const parseCli = (): CliOptions => {
 
 const showHelp = () => {
   // eslint-disable-next-line no-console
-  console.log(`Usage: npm run dev -- [options]\n\nOptions:\n  -q, --query <name...> Exécute uniquement les requêtes spécifiées.\n                         Accepte plusieurs valeurs séparées par des espaces ou\n                         des virgules (ex: -q anglais paris) ou un raccourci\n                         thème (ex: anglais) pour toutes les variantes.\n  -c, --city <slug...>  Limite les requêtes aux villes données (ex: -c lyon).\n                         Accepte plusieurs valeurs séparées par des espaces ou\n                         des virgules.\n  -h, --help            Affiche cette aide\n\nRequêtes disponibles :\n  ${searchQueries.map((query) => `- ${query.name}`).join('\n  ')}`);
+  console.log(`Usage: npm run dev -- [options]\n\nOptions:\n  -q, --query <name...> Exécute uniquement les requêtes spécifiées.\n                         Accepte plusieurs valeurs séparées par des espaces ou\n                         des virgules (ex: -q anglais paris) ou un raccourci\n                         thème (ex: anglais) pour toutes les variantes.\n  -c, --city <slug...>  Limite les requêtes aux villes données (ex: -c lyon).\n                         Accepte plusieurs valeurs séparées par des espaces ou\n                         des virgules.\n  --no-shuffle          Désactive l'ordre aléatoire des requêtes.\n  -h, --help            Affiche cette aide\n\nRequêtes disponibles :\n  ${searchQueries.map((query) => `- ${query.name}`).join('\n  ')}`);
 };
 
 const main = async () => {
@@ -177,7 +184,7 @@ const main = async () => {
   const startedAt = Date.now();
 
   try {
-    await runExtraction(queriesToRun);
+    await runExtraction(queriesToRun, { shuffle: !options.noShuffle });
     const durationMs = Date.now() - startedAt;
     logger.info('Extraction terminée (%d ms)', durationMs);
   } catch (error) {

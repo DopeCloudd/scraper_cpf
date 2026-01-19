@@ -127,6 +127,15 @@ const pickNumber = (...values: unknown[]): number | undefined => {
   return undefined;
 };
 
+const shuffleQueries = <T>(items: T[]): T[] => {
+  const result = [...items];
+  for (let i = result.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [result[i], result[j]] = [result[j], result[i]];
+  }
+  return result;
+};
+
 const normalizeListItem = (item: JsonRecord): NormalizedListItem => {
   const organisme = (item.organismeFormation ??
     item.organisme ??
@@ -709,11 +718,21 @@ const processQuery = async (browser: Browser, query: SearchQuery) => {
   }
 };
 
-export const runExtraction = async (queries: SearchQuery[] = searchQueries) => {
+interface RunExtractionOptions {
+  shuffle?: boolean;
+}
+
+export const runExtraction = async (
+  queries: SearchQuery[] = searchQueries,
+  options: RunExtractionOptions = {}
+) => {
   const browser = await createBrowser();
+  const { shuffle = true } = options;
 
   try {
-    for (const query of queries) {
+    const queriesToRun = shuffle ? shuffleQueries(queries) : queries;
+    const limitedQueries = queriesToRun.slice(0, 1);
+    for (const query of limitedQueries) {
       await processQuery(browser, query);
       await humanDelay(randomBetween(1500, 4000));
     }

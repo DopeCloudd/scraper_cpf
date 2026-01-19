@@ -1,8 +1,8 @@
 /* eslint-disable no-console */
+import type { Prisma } from "@prisma/client";
 import ExcelJS from "exceljs";
 import fs from "fs/promises";
 import path from "path";
-import type { Prisma } from "@prisma/client";
 import { prisma } from "../db/prisma";
 import { logger } from "../utils/logger"; // si vous n'avez pas ce logger, remplacez par console
 
@@ -90,10 +90,10 @@ const buildCleanCenterWhere = (): Prisma.TrainingCenterWhereInput => ({
 });
 
 const combineCenterWhere = (
-  clauses: Array<Prisma.TrainingCenterWhereInput | undefined>
+  clauses: Array<Prisma.TrainingCenterWhereInput | undefined>,
 ): Prisma.TrainingCenterWhereInput | undefined => {
   const filtered = clauses.filter(
-    (clause): clause is Prisma.TrainingCenterWhereInput => clause != null
+    (clause): clause is Prisma.TrainingCenterWhereInput => clause != null,
   );
   if (filtered.length === 0) return undefined;
   if (filtered.length === 1) return filtered[0];
@@ -101,10 +101,10 @@ const combineCenterWhere = (
 };
 
 const combineTrainingWhere = (
-  clauses: Array<Prisma.TrainingWhereInput | undefined>
+  clauses: Array<Prisma.TrainingWhereInput | undefined>,
 ): Prisma.TrainingWhereInput | undefined => {
   const filtered = clauses.filter(
-    (clause): clause is Prisma.TrainingWhereInput => clause != null
+    (clause): clause is Prisma.TrainingWhereInput => clause != null,
   );
   if (filtered.length === 0) return undefined;
   if (filtered.length === 1) return filtered[0];
@@ -141,7 +141,7 @@ const buildTitleFilter = (raw: string | undefined): TitleFilter | undefined => {
 
 const titleMatchesFilter = (
   title: string | null | undefined,
-  filter?: TitleFilter
+  filter?: TitleFilter,
 ): boolean => {
   if (!filter) return true;
   const normalizedTitle = normalizeMatchText(title);
@@ -188,12 +188,12 @@ const safeUnlink = async (targetPath: string): Promise<void> => {
 const createTempFilePath = (baseName: string): string =>
   path.join(
     EXPORT_DIR,
-    `${baseName}_${Date.now()}_${Math.random().toString(36).slice(2)}.tmp.xlsx`
+    `${baseName}_${Date.now()}_${Math.random().toString(36).slice(2)}.tmp.xlsx`,
   );
 
 const collectTitleFilterMatches = async (
   filter: TitleFilter,
-  options: Pick<ExportOptions, "createdAfter" | "cleanOnly">
+  options: Pick<ExportOptions, "createdAfter" | "cleanOnly">,
 ): Promise<TitleFilterMatches> => {
   const trainingIds = new Set<number>();
   const centerIds = new Set<number>();
@@ -238,6 +238,32 @@ const collectTitleFilterMatches = async (
   };
 };
 
+const collectSearchQueriesForExport = async (
+  options: Pick<ExportOptions, "createdAfter" | "cleanOnly">,
+): Promise<string[]> => {
+  const where = combineTrainingWhere([
+    options.createdAfter
+      ? { createdAt: { gte: options.createdAfter } }
+      : undefined,
+    options.cleanOnly
+      ? { center: { is: buildCleanCenterWhere() } }
+      : undefined,
+    { searchQuery: { not: null } },
+    { searchQuery: { not: "" } },
+  ]);
+
+  const rows = await prisma.training.findMany({
+    ...(where ? { where } : {}),
+    distinct: ["searchQuery"],
+    select: { searchQuery: true },
+  });
+
+  return rows
+    .map((row) => row.searchQuery)
+    .filter((value): value is string => Boolean(value && value.trim()))
+    .sort((a, b) => a.localeCompare(b));
+};
+
 type CtrLite = {
   id: number;
   name: string;
@@ -254,6 +280,7 @@ type SheetOptions = {
   createdAfter?: Date;
   cleanOnly?: boolean;
   titleFilterMatches?: TitleFilterMatches;
+  searchQueryFilter?: string;
   centerIdFilter?: number[];
   trainingIdsFilter?: number[];
 };
@@ -262,7 +289,7 @@ type SheetOptions = {
 
 async function writeCentersSheet(
   workbook: ExcelJS.stream.xlsx.WorkbookWriter,
-  options: SheetOptions = {}
+  options: SheetOptions = {},
 ) {
   const ws = workbook.addWorksheet("Centres", {
     properties: { tabColor: { argb: "FF1F497D" } },
@@ -303,9 +330,7 @@ async function writeCentersSheet(
   const matchedCenterIds = options.titleFilterMatches?.centerIds;
   const matchedTrainingIds = options.titleFilterMatches?.trainingIds;
   const chunkCenterIds = options.centerIdFilter;
-  const chunkCenterSet = chunkCenterIds
-    ? new Set(chunkCenterIds)
-    : undefined;
+  const chunkCenterSet = chunkCenterIds ? new Set(chunkCenterIds) : undefined;
   const effectiveMatchedCenterIds = matchedCenterIds
     ? chunkCenterSet
       ? matchedCenterIds.filter((id) => chunkCenterSet.has(id))
@@ -332,6 +357,9 @@ async function writeCentersSheet(
         : undefined,
       options.cleanOnly
         ? { center: { is: buildCleanCenterWhere() } }
+        : undefined,
+      options.searchQueryFilter
+        ? { searchQuery: options.searchQueryFilter }
         : undefined,
       matchedTrainingIds ? { id: { in: matchedTrainingIds } } : undefined,
       chunkCenterIds ? { centerId: { in: chunkCenterIds } } : undefined,
@@ -531,7 +559,7 @@ async function writeCentersSheet(
 
 async function writeTrainingsSheet(
   workbook: ExcelJS.stream.xlsx.WorkbookWriter,
-  options: SheetOptions = {}
+  options: SheetOptions = {},
 ) {
   const ws = workbook.addWorksheet("Formations", {
     properties: { tabColor: { argb: "FF8064A2" } },
@@ -556,6 +584,7 @@ async function writeTrainingsSheet(
     { header: "Se termine le", key: "endDate", width: 18 },
     { header: "Recherche", key: "searchQuery", width: 18 },
     { header: "URL détail", key: "detailUrl", width: 60 },
+    { header: "Contenu", key: "contentHtml", width: 60 },
     { header: "List scrappée", key: "lastListScrapedAt", width: 20 },
     { header: "Detail scrappé", key: "lastDetailScrapedAt", width: 20 },
     { header: "Créé", key: "createdAt", width: 20 },
@@ -582,8 +611,7 @@ async function writeTrainingsSheet(
     : undefined;
 
   if (
-    (effectiveMatchedTrainingIds &&
-      effectiveMatchedTrainingIds.length === 0) ||
+    (effectiveMatchedTrainingIds && effectiveMatchedTrainingIds.length === 0) ||
     (chunkTrainingIds &&
       chunkTrainingIds.length === 0 &&
       !effectiveMatchedTrainingIds)
@@ -614,6 +642,7 @@ async function writeTrainingsSheet(
     startDate: Date | null;
     endDate: Date | null;
     searchQuery: string | null;
+    contentHtml: string | null;
     lastListScrapedAt: Date | null;
     lastDetailScrapedAt: Date | null;
     createdAt: Date;
@@ -681,6 +710,7 @@ async function writeTrainingsSheet(
         endDate: t.endDate ?? "",
         searchQuery: t.searchQuery ?? "",
         detailUrl: t.detailUrl,
+        contentHtml: t.contentHtml ?? "",
         lastListScrapedAt: t.lastListScrapedAt ?? "",
         lastDetailScrapedAt: t.lastDetailScrapedAt ?? "",
         createdAt: t.createdAt,
@@ -734,9 +764,10 @@ async function writeTrainingsSheet(
           options.cleanOnly
             ? { center: { is: buildCleanCenterWhere() } }
             : undefined,
-          chunkCenterIds
-            ? { centerId: { in: chunkCenterIds } }
+          options.searchQueryFilter
+            ? { searchQuery: options.searchQueryFilter }
             : undefined,
+          chunkCenterIds ? { centerId: { in: chunkCenterIds } } : undefined,
         ]),
         orderBy: { id: "asc" },
         select: {
@@ -756,6 +787,7 @@ async function writeTrainingsSheet(
           startDate: true,
           endDate: true,
           searchQuery: true,
+          contentHtml: true,
           lastListScrapedAt: true,
           lastDetailScrapedAt: true,
           createdAt: true,
@@ -780,9 +812,10 @@ async function writeTrainingsSheet(
           options.cleanOnly
             ? { center: { is: buildCleanCenterWhere() } }
             : undefined,
-          chunkCenterIds
-            ? { centerId: { in: chunkCenterIds } }
+          options.searchQueryFilter
+            ? { searchQuery: options.searchQueryFilter }
             : undefined,
+          chunkCenterIds ? { centerId: { in: chunkCenterIds } } : undefined,
         ]),
         orderBy: { id: "asc" },
         select: {
@@ -802,6 +835,7 @@ async function writeTrainingsSheet(
           startDate: true,
           endDate: true,
           searchQuery: true,
+          contentHtml: true,
           lastListScrapedAt: true,
           lastDetailScrapedAt: true,
           createdAt: true,
@@ -823,13 +857,12 @@ async function writeTrainingsSheet(
         options.cleanOnly
           ? { center: { is: buildCleanCenterWhere() } }
           : undefined,
+        options.searchQueryFilter
+          ? { searchQuery: options.searchQueryFilter }
+          : undefined,
         lastId ? { id: { gt: lastId } } : undefined,
-        chunkCenterIds
-          ? { centerId: { in: chunkCenterIds } }
-          : undefined,
-        chunkTrainingIds
-          ? { id: { in: chunkTrainingIds } }
-          : undefined,
+        chunkCenterIds ? { centerId: { in: chunkCenterIds } } : undefined,
+        chunkTrainingIds ? { id: { in: chunkTrainingIds } } : undefined,
       ]);
 
       const trainings = await prisma.training.findMany({
@@ -853,6 +886,7 @@ async function writeTrainingsSheet(
           startDate: true,
           endDate: true,
           searchQuery: true,
+          contentHtml: true,
           lastListScrapedAt: true,
           lastDetailScrapedAt: true,
           createdAt: true,
@@ -875,7 +909,7 @@ async function writeTrainingsSheet(
 
 async function writeSummarySheet(
   workbook: ExcelJS.stream.xlsx.WorkbookWriter,
-  options: SheetOptions = {}
+  options: SheetOptions = {},
 ) {
   const ws = workbook.addWorksheet("Résumé", {
     properties: { tabColor: { argb: "FF4BACC6" } },
@@ -914,6 +948,9 @@ async function writeSummarySheet(
       options.cleanOnly
         ? { center: { is: buildCleanCenterWhere() } }
         : undefined,
+      options.searchQueryFilter
+        ? { searchQuery: options.searchQueryFilter }
+        : undefined,
       options.titleFilterMatches
         ? { id: { in: options.titleFilterMatches.trainingIds } }
         : undefined,
@@ -940,10 +977,10 @@ async function writeSummarySheet(
   const mapCenters = new Map<string | null, number>();
   const mapTrainings = new Map<string | null, number>();
   centersByRegion.forEach((r) =>
-    mapCenters.set(r.region ?? null, r._count._all)
+    mapCenters.set(r.region ?? null, r._count._all),
   );
   trainingsByRegion.forEach((r) =>
-    mapTrainings.set(r.region ?? null, r._count._all)
+    mapTrainings.set(r.region ?? null, r._count._all),
   );
 
   const regions = new Set<string | null>([
@@ -972,9 +1009,21 @@ async function writeSummarySheet(
 
 // ------------------------- Main -------------------------
 
-const buildBaseFileName = (titleFilter?: TitleFilter): string => {
+const buildBaseFileName = ({
+  titleFilter,
+  searchQuery,
+  baseName,
+}: {
+  titleFilter?: TitleFilter;
+  searchQuery?: string;
+  baseName?: string;
+} = {}): string => {
+  if (baseName) return baseName;
   if (titleFilter) {
     return `export_cpf_${sanitizeForFilename(titleFilter.raw)}`;
+  }
+  if (searchQuery) {
+    return `export_mcf_${sanitizeForFilename(searchQuery)}_${TIMESTAMP}`;
   }
   return `export_mcf_${TIMESTAMP}`;
 };
@@ -1021,7 +1070,7 @@ const createFileAllocator = (baseName: string): FileAllocator => {
 
       const targetPath = path.join(
         EXPORT_DIR,
-        `${baseName}_part${nextIndex}.xlsx`
+        `${baseName}_part${nextIndex}.xlsx`,
       );
       await safeUnlink(targetPath);
       await fs.rename(tempPath, targetPath);
@@ -1048,7 +1097,7 @@ type ChunkContext = {
 const writeWorkbookToPath = async (
   filename: string,
   sheetOptions: SheetOptions,
-  includeTrainings: boolean
+  includeTrainings: boolean,
 ): Promise<void> => {
   const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
     filename,
@@ -1072,7 +1121,7 @@ const writeWorkbookToPath = async (
       await workbook.commit();
     } catch (commitError) {
       logger.error?.(
-        `Erreur lors de la fermeture du workbook: ${commitError instanceof Error ? commitError.message : String(commitError)}`
+        `Erreur lors de la fermeture du workbook: ${commitError instanceof Error ? commitError.message : String(commitError)}`,
       );
     }
     throw error;
@@ -1080,10 +1129,39 @@ const writeWorkbookToPath = async (
 };
 
 const collectCenterIdsForExport = async (
-  options: SheetOptions
+  options: SheetOptions,
 ): Promise<number[]> => {
   if (options.titleFilterMatches) {
     return options.titleFilterMatches.centerIds;
+  }
+
+  if (options.centerIdFilter) {
+    return [...options.centerIdFilter];
+  }
+
+  if (options.trainingIdsFilter) {
+    const grouped = await prisma.training.groupBy({
+      by: ["centerId"],
+      where: { id: { in: options.trainingIdsFilter } },
+    });
+    return grouped.map((group) => group.centerId).sort((a, b) => a - b);
+  }
+
+  if (options.searchQueryFilter) {
+    const where = combineTrainingWhere([
+      options.createdAfter
+        ? { createdAt: { gte: options.createdAfter } }
+        : undefined,
+      options.cleanOnly
+        ? { center: { is: buildCleanCenterWhere() } }
+        : undefined,
+      { searchQuery: options.searchQueryFilter },
+    ]);
+    const grouped = await prisma.training.groupBy({
+      by: ["centerId"],
+      ...(where ? { where } : {}),
+    });
+    return grouped.map((group) => group.centerId).sort((a, b) => a - b);
   }
 
   const ids: number[] = [];
@@ -1115,7 +1193,7 @@ const collectCenterIdsForExport = async (
 
 const collectTrainingIdsForCenter = async (
   centerId: number,
-  options: SheetOptions
+  options: SheetOptions,
 ): Promise<number[]> => {
   const ids: number[] = [];
   let lastId: number | undefined;
@@ -1128,8 +1206,14 @@ const collectTrainingIdsForCenter = async (
       options.cleanOnly
         ? { center: { is: buildCleanCenterWhere() } }
         : undefined,
+      options.searchQueryFilter
+        ? { searchQuery: options.searchQueryFilter }
+        : undefined,
       options.titleFilterMatches
         ? { id: { in: options.titleFilterMatches.trainingIds } }
+        : undefined,
+      options.trainingIdsFilter
+        ? { id: { in: options.trainingIdsFilter } }
         : undefined,
       { centerId },
       lastId ? { id: { gt: lastId } } : undefined,
@@ -1153,7 +1237,7 @@ const collectTrainingIdsForCenter = async (
 
 const exportChunkJob = async (
   job: ChunkJob,
-  ctx: ChunkContext
+  ctx: ChunkContext,
 ): Promise<void> => {
   const chunkOptions: SheetOptions = {
     ...ctx.baseOptions,
@@ -1168,7 +1252,7 @@ const exportChunkJob = async (
   if (ctx.forceSingleFile) {
     const finalPath = await ctx.allocator.registerFinalFile(tempPath);
     logger.info?.(
-      `Export ⇒ ${job.label ?? "chunk"} validé en mode unique (${formatBytes(stats.size)}) -> ${finalPath}`
+      `Export ⇒ ${job.label ?? "chunk"} validé en mode unique (${formatBytes(stats.size)}) -> ${finalPath}`,
     );
     return;
   }
@@ -1176,7 +1260,7 @@ const exportChunkJob = async (
   if (stats.size <= MAX_FILE_SIZE_BYTES) {
     const finalPath = await ctx.allocator.registerFinalFile(tempPath);
     logger.info?.(
-      `Export ⇒ ${job.label ?? "chunk"} validé (${formatBytes(stats.size)}) -> ${finalPath}`
+      `Export ⇒ ${job.label ?? "chunk"} validé (${formatBytes(stats.size)}) -> ${finalPath}`,
     );
     return;
   }
@@ -1184,7 +1268,7 @@ const exportChunkJob = async (
   await safeUnlink(tempPath);
   const readableSize = formatBytes(stats.size);
   logger.warn?.(
-    `Export ⇒ ${job.label ?? "chunk"} trop volumineux (${readableSize}), division en cours`
+    `Export ⇒ ${job.label ?? "chunk"} trop volumineux (${readableSize}), division en cours`,
   );
 
   if (job.trainingIds && job.trainingIds.length > 1) {
@@ -1195,7 +1279,7 @@ const exportChunkJob = async (
         trainingIds: job.trainingIds.slice(0, mid),
         label: `${job.label ?? "chunk"} (formations A)`,
       },
-      ctx
+      ctx,
     );
     await exportChunkJob(
       {
@@ -1203,7 +1287,7 @@ const exportChunkJob = async (
         trainingIds: job.trainingIds.slice(mid),
         label: `${job.label ?? "chunk"} (formations B)`,
       },
-      ctx
+      ctx,
     );
     return;
   }
@@ -1215,21 +1299,21 @@ const exportChunkJob = async (
         centerIds: job.centerIds.slice(0, mid),
         label: `${job.label ?? "chunk"} (part 1)`,
       },
-      ctx
+      ctx,
     );
     await exportChunkJob(
       {
         centerIds: job.centerIds.slice(mid),
         label: `${job.label ?? "chunk"} (part 2)`,
       },
-      ctx
+      ctx,
     );
     return;
   }
 
   if (!ctx.includeTrainings) {
     throw new Error(
-      `Impossible de réduire davantage ${job.label ?? "le chunk"} sans formations`
+      `Impossible de réduire davantage ${job.label ?? "le chunk"} sans formations`,
     );
   }
 
@@ -1244,7 +1328,7 @@ const exportChunkJob = async (
 
   if (allTrainingIds.length <= 1) {
     throw new Error(
-      `Impossible de générer un fichier < ${formatBytes(MAX_FILE_SIZE_BYTES)} pour le centre ${centerId}`
+      `Impossible de générer un fichier < ${formatBytes(MAX_FILE_SIZE_BYTES)} pour le centre ${centerId}`,
     );
   }
 
@@ -1255,7 +1339,7 @@ const exportChunkJob = async (
       trainingIds: allTrainingIds.slice(0, mid),
       label: `${job.label ?? `centre ${centerId}`} (formations 1)`,
     },
-    ctx
+    ctx,
   );
   await exportChunkJob(
     {
@@ -1263,7 +1347,7 @@ const exportChunkJob = async (
       trainingIds: allTrainingIds.slice(mid),
       label: `${job.label ?? `centre ${centerId}`} (formations 2)`,
     },
-    ctx
+    ctx,
   );
 };
 
@@ -1272,18 +1356,20 @@ type ExportOptions = {
   createdAfter?: Date;
   cleanOnly?: boolean;
   titleFilter?: TitleFilter;
+  searchQueryFilter?: string;
+  baseFileName?: string;
   forceSingleFile?: boolean;
 };
 
 export async function exportToExcel(
-  options: ExportOptions = {}
+  options: ExportOptions = {},
 ): Promise<string[]> {
   await ensureDir(EXPORT_DIR);
 
   let titleFilterMatches: TitleFilterMatches | undefined;
   if (options.titleFilter) {
     logger.info?.(
-      `Export ⇒ préparation du filtre titre "${options.titleFilter.raw}"`
+      `Export ⇒ préparation du filtre titre "${options.titleFilter.raw}"`,
     );
     titleFilterMatches = await collectTitleFilterMatches(options.titleFilter, {
       createdAfter: options.createdAfter,
@@ -1291,11 +1377,11 @@ export async function exportToExcel(
     });
     if (titleFilterMatches.trainingIds.length === 0) {
       logger.warn?.(
-        `Export ⇒ aucun résultat pour le filtre titre "${options.titleFilter.raw}"`
+        `Export ⇒ aucun résultat pour le filtre titre "${options.titleFilter.raw}"`,
       );
     } else {
       logger.info?.(
-        `Export ⇒ filtre titre "${options.titleFilter.raw}" => ${titleFilterMatches.trainingIds.length} formations / ${titleFilterMatches.centerIds.length} centres`
+        `Export ⇒ filtre titre "${options.titleFilter.raw}" => ${titleFilterMatches.trainingIds.length} formations / ${titleFilterMatches.centerIds.length} centres`,
       );
     }
   }
@@ -1304,16 +1390,21 @@ export async function exportToExcel(
     createdAfter: options.createdAfter,
     cleanOnly: options.cleanOnly,
     titleFilterMatches,
+    searchQueryFilter: options.searchQueryFilter,
   };
 
   const includeTrainings = options.includeTrainings ?? true;
   const forceSingleFile = options.forceSingleFile ?? false;
-  const baseFileName = buildBaseFileName(options.titleFilter);
+  const baseFileName = buildBaseFileName({
+    titleFilter: options.titleFilter,
+    searchQuery: options.searchQueryFilter,
+    baseName: options.baseFileName,
+  });
   const allocator = createFileAllocator(baseFileName);
   const centerIds = await collectCenterIdsForExport(baseOptions);
 
   logger.info?.(
-    `Export ⇒ ${centerIds.length} centre(s) à exporter${includeTrainings ? "" : " (centres uniquement)"}`
+    `Export ⇒ ${centerIds.length} centre(s) à exporter${includeTrainings ? "" : " (centres uniquement)"}`,
   );
 
   if (forceSingleFile) {
@@ -1343,7 +1434,7 @@ export async function exportToExcel(
         centerIds: chunk,
         label: buildChunkLabel(chunk, chunkIndex),
       },
-      ctx
+      ctx,
     );
   }
 
@@ -1353,7 +1444,7 @@ export async function exportToExcel(
   }
 
   logger.info?.(
-    `Export ⇒ ${files.length} fichier(s) généré(s) (max ${formatBytes(MAX_FILE_SIZE_BYTES)} chacun)`
+    `Export ⇒ ${files.length} fichier(s) généré(s) (max ${formatBytes(MAX_FILE_SIZE_BYTES)} chacun)`,
   );
 
   return files;
@@ -1403,7 +1494,7 @@ if (require.main === module) {
 
   if (createdAfter) {
     logger.info?.(
-      `Export ⇒ filtre createdAfter activé (${createdAfter.toISOString()})`
+      `Export ⇒ filtre createdAfter activé (${createdAfter.toISOString()})`,
     );
   }
 
@@ -1412,47 +1503,34 @@ if (require.main === module) {
     logger.info?.("Export ⇒ filtre clean-only activé");
   }
 
-  let titleFilter: TitleFilter | undefined;
-  const directTitleArg = args.find((arg) => arg.startsWith("--title="));
-  if (directTitleArg) {
-    const raw = directTitleArg.slice("--title=".length).trim();
-    const built = buildTitleFilter(raw);
-    if (!built) {
-      logger.error?.("❌ Argument --title invalide (texte vide)");
-      process.exit(1);
-    }
-    titleFilter = built;
-  } else {
-    const titleIndex = args.findIndex((arg) => arg === "--title");
-    if (titleIndex !== -1) {
-      const raw = args[titleIndex + 1];
-      if (!raw) {
-        logger.error?.("❌ Argument manquant après --title");
+  collectSearchQueriesForExport({ createdAfter, cleanOnly })
+    .then(async (queries) => {
+      if (queries.length === 0) {
+        logger.error?.("❌ Aucun searchQuery disponible pour l'export");
         process.exit(1);
       }
-      const built = buildTitleFilter(raw);
-      if (!built) {
-        logger.error?.("❌ Argument --title invalide (texte vide)");
-        process.exit(1);
+
+      logger.info?.(
+        `Export ⇒ ${queries.length} searchQuery détecté(s), génération des fichiers`,
+      );
+
+      const exportedFiles: string[] = [];
+      for (const query of queries) {
+        const baseFileName = buildBaseFileName({ searchQuery: query });
+        logger.info?.(`Export ⇒ recherche "${query}" -> ${baseFileName}.xlsx`);
+        const files = await exportToExcel({
+          includeTrainings: !centersOnly,
+          createdAfter,
+          cleanOnly,
+          searchQueryFilter: query,
+          baseFileName,
+          forceSingleFile: singleFile,
+        });
+        exportedFiles.push(...files);
       }
-      titleFilter = built;
-    }
-  }
 
-  if (titleFilter) {
-    logger.info?.(`Export ⇒ filtre titre demandé: "${titleFilter.raw}"`);
-  }
-
-  exportToExcel({
-    includeTrainings: !centersOnly,
-    createdAfter,
-    cleanOnly,
-    titleFilter,
-    forceSingleFile: singleFile,
-  })
-    .then((files) => {
-      files.forEach((file) =>
-        logger.info?.(`✅ Export terminé -> ${file}`)
+      exportedFiles.forEach((file) =>
+        logger.info?.(`✅ Export terminé -> ${file}`),
       );
       process.exit(0);
     })

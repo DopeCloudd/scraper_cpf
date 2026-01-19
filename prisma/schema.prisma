@@ -53,6 +53,7 @@ model Training {
   detailUrl           String           @unique
   summary             String?
   descriptionHtml     String?         @db.LongText
+  contentHtml         String?         @db.LongText
   address             String?         @db.Text
   city                String?         @db.VarChar(512)
   postalCode          String?         @db.VarChar(32)

@@ -3,11 +3,13 @@
 Collecte, enrichissement et export de données MonCompteFormation.
 
 ## Prérequis
+
 - Node.js 18+
 - Base MySQL accessible (valeur pour `DATABASE_URL`)
 - `npm install` exécuté dans le dossier du projet
 
 ## Configuration (.env)
+
 Copier `.env` et ajuster si besoin :
 
 ```
@@ -37,23 +39,36 @@ OPENDATA_RETRIES=2              # tentatives avant abandon
 ```
 
 ## Commandes npm
-- `npm run extract [-- --query=<nom> ...]` : scrape des formations depuis MonCompteFormation.
-  - Sans option, toutes les requêtes de `searchQueries.ts` sont exécutées.
-  - `--query=anglais` lance toutes les variantes dont le nom commence par `anglais-` (villes + distance).
-  - `--query=anglais-paris-mixte` cible une requête précise.
-  - Les options sont cumulables : `--query=anglais --query=marketing-lyon-mixte`.
-- `npm run enrich` : visite les fiches en attente pour récupérer les détails (contacts, description HTML, etc.).
-- `npm run sync:opendata` : synchronise les données centres depuis l'open data.
-- `npm run export` : génère un fichier dans `EXPORT_DIR` (CSV/Excel selon implémentation).
-- `npm run db:clear` : vide les tables (utiliser avec prudence).
-- `npm run prisma:generate` / `npm run prisma:migrate` : gestion du schéma Prisma.
-- `npm run build` puis `npm start` : compilation + exécution depuis `dist`.
-- `npm run lint` / `npm run format` : qualité du code.
+
+- `npm run extract -- [options]` : scrape des formations depuis MonCompteFormation.
+  - `-q, --query <nom...>` ou `--query=nom`: limite aux requêtes indiquées (alias accepté : si vous passez `anglais`, toutes les requêtes `anglais-*` sont exécutées).
+  - `-c, --city <slug...>` ou `--city=slug`: limite aux villes présentes dans le nom de la requête (`-c lyon paris`).
+  - `--no-shuffle` : exécute les requêtes dans l'ordre déclaré (sinon l'ordre est aléatoire à chaque run).
+  - `-h, --help` : affiche l'aide avec la liste des requêtes disponibles.
+  - Sans option, toutes les requêtes de `searchQueries.ts` sont traitées.
+- `npm run enrich` : visite les fiches en attente pour récupérer les détails (contacts, description HTML, etc.). Aucune option.
+- `npm run sync:opendata` : synchronise les données centres depuis l'open data. Aucune option.
+- `npm run export -- [options]` : génère un ou plusieurs fichiers Excel dans `EXPORT_DIR`.
+  - `--centers-only` / `--centres-only` : n'exporte que les centres (pas l'onglet Formations).
+  - `--clean` ou `--clean-list` : limite aux centres « propres » (SIREN/SIRET/email valides + téléphone ou site).
+  - `--created-after=2024-01-01` ou `--created-after 2024-01-01` : filtre sur la date de création (ISO).
+  - `--single-file` : force la génération d'un unique fichier (désactive la découpe automatique en chunks ; attention à la taille !).
+  - Par défaut, l'export génère un fichier par `searchQuery` et inclut le nom de la requête dans le nom du fichier (ex: `export_mcf_comptable-paris-mixte_YYYY-MM-DDTHH-MM-SS.xlsx`).
+- `npm run db:clear` : vide les tables (utiliser avec prudence). Aucune option.
+- `npm run prisma:generate` / `npm run prisma:migrate` : gestion du schéma Prisma. Options Prisma disponibles via `npx prisma --help`.
+- `npm run build` puis `npm start` : compilation + exécution depuis `dist`. Pas d'option supplémentaire côté npm (transmettez vos variables d'environnement).
+- `npm run lint` / `npm run format` : qualité du code, aucune option (mais vous pouvez cibler des fichiers via les options ESLint/Prettier standard en éditant la commande au besoin).
+
+## Paramétrage des recherches
+
+- Les requêtes "mixte" sont centrées sur Paris (et non plus sur une liste de villes).
+- Le rayon de recherche mixte est configuré dans `src/config/searchQueries.ts` (actuellement `distance: "50000"`).
 
 ## Flux type
+
 1. Préparer la base MySQL et exécuter `npm run prisma:migrate` (ou `npx prisma db push`).
 2. Lancer `npm run extract -- --query=<thème>` pour peupler les formations.
-3. Exécuter `npm run enrich` afin d’obtenir les détails (prix, description HTML, contacts).
+3. Exécuter `npm run enrich` afin d’obtenir les détails (prix, description HTML, contenu, contacts).
 4. Optionnel : `npm run export` pour générer un fichier de sortie.
 5. `npm run sync:opendata` pour actualiser les fiches centres avec les données publiques.
 

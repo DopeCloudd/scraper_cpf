@@ -28,6 +28,7 @@ interface ParsedDetailData {
   region?: string;
   country?: string;
   descriptionHtml?: string;
+  contentHtml?: string;
   summary?: string;
   raw: Prisma.InputJsonValue;
 }
@@ -136,6 +137,99 @@ const pickText = async (
   return undefined;
 };
 
+const expandContentSection = async (page: Page): Promise<void> => {
+  await page
+    .evaluate(() => {
+      const normalize = (text?: string | null) =>
+        text
+          ?.normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .toLowerCase()
+          .trim();
+      const heading = Array.from(
+        document.querySelectorAll<HTMLHeadingElement>("h3")
+      ).find((node) => {
+        const normalized = normalize(node.textContent);
+        return normalized ? normalized.includes("contenu") : false;
+      });
+      if (!heading) return;
+
+      const scopes = [heading.parentElement, heading.nextElementSibling].filter(
+        Boolean
+      ) as Element[];
+      const btn = scopes
+        .flatMap((scope) =>
+          Array.from(scope.querySelectorAll<HTMLButtonElement>("button"))
+        )
+        .find((button) => {
+          const controls = (
+            button.getAttribute("aria-controls") ?? ""
+          ).toLowerCase();
+          const described = (
+            button.getAttribute("aria-describedby") ?? ""
+          ).toLowerCase();
+          return controls.includes("contenu") || described.includes("contenu");
+        });
+      if (btn && btn.getAttribute("aria-expanded") === "false") {
+        btn.click();
+      }
+    })
+    .catch(() => undefined);
+
+  await page.waitForTimeout(250);
+};
+
+const extractContentHtml = async (
+  page: Page
+): Promise<string | undefined> => {
+  return page
+    .evaluate(() => {
+      const normalize = (text?: string | null) =>
+        text
+          ?.normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .toLowerCase()
+          .trim();
+
+      const heading = Array.from(
+        document.querySelectorAll<HTMLHeadingElement>("h3")
+      ).find((node) => {
+        const normalized = normalize(node.textContent);
+        return normalized ? normalized.includes("contenu") : false;
+      });
+      if (!heading) return undefined;
+
+      const candidates: Element[] = [];
+      if (heading.parentElement) candidates.push(heading.parentElement);
+      if (heading.nextElementSibling) candidates.push(heading.nextElementSibling);
+
+      for (const candidate of [...candidates]) {
+        const collapse = candidate.querySelector(
+          "[data-fr-js-collapse], .fr-collapse"
+        );
+        if (collapse) candidates.push(collapse);
+      }
+
+      const container =
+        candidates.find(
+          (node) => node.textContent && node.textContent.trim()
+        ) ?? heading.parentElement;
+      if (!container) return undefined;
+
+      const htmlPieces = Array.from(container.querySelectorAll("p, ul, ol, li"))
+        .map((node) => node.outerHTML?.trim())
+        .filter((snippet): snippet is string => Boolean(snippet));
+
+      if (htmlPieces.length > 0) {
+        return htmlPieces.join("\n");
+      }
+
+      const fallback = container.innerHTML?.trim();
+      return fallback && fallback.length > 0 ? fallback : undefined;
+    })
+    .catch(() => undefined);
+};
+
 const toNumber = (value?: string | null): number | undefined => {
   if (!value) return undefined;
   const normalized = value.replace(/[^0-9.,-]/g, "").replace(",", ".");
@@ -178,6 +272,8 @@ const validateWebsiteUrl = (url?: string): string | undefined => {
 };
 
 const parseDetailPage = async (page: Page): Promise<ParsedDetailData> => {
+  await expandContentSection(page);
+
   const [priceText, durationText, basicAddressText] = await Promise.all([
     pickText(page, ["li.bloc-info.prix .soustitre"]),
     pickText(page, ["li.bloc-info .soustitre.dureeRythme"]),
@@ -227,6 +323,8 @@ const parseDetailPage = async (page: Page): Promise<ParsedDetailData> => {
     .$eval("#bloc-description", (element) => element.innerHTML.trim())
     .catch(() => undefined);
 
+  const contentHtml = await extractContentHtml(page);
+
   const contacts = await extractContacts(page);
 
   const detailJson = await page.evaluate(() => {
@@ -257,6 +355,7 @@ const parseDetailPage = async (page: Page): Promise<ParsedDetailData> => {
       durationText,
       addressBlock,
       descriptionHtml,
+      contentHtml,
       timestamp: new Date().toISOString(),
     },
   };
@@ -313,6 +412,7 @@ const parseDetailPage = async (page: Page): Promise<ParsedDetailData> => {
     region,
     country,
     descriptionHtml,
+    contentHtml,
     raw: enrichedDetailJson as Prisma.InputJsonValue,
   };
 };
@@ -450,6 +550,25 @@ const processTraining = async (
     return false;
   }
 
+  const contentHtml = parseResult.contentHtml?.trim();
+  if (!contentHtml) {
+    logger.warn(
+      "Suppression formation %d: contenu vide ou introuvable",
+      trainingId
+    );
+    try {
+      await prisma.training.delete({ where: { id: trainingId } });
+      return true;
+    } catch (error) {
+      logger.error(
+        "Erreur suppression formation %d: %s",
+        trainingId,
+        error instanceof Error ? error.message : String(error)
+      );
+      return false;
+    }
+  }
+
   try {
     await prisma.$transaction(async (tx) => {
       const priceDecimal =
@@ -473,6 +592,9 @@ const processTraining = async (
           descriptionHtml:
             parseResult?.descriptionHtml && parseResult.descriptionHtml.length
               ? parseResult.descriptionHtml
+              : undefined,
+          contentHtml:
+            contentHtml && contentHtml.length ? contentHtml
               : undefined,
           detailPageData: parseResult?.raw,
           needsDetail: false,
