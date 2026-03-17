@@ -86,6 +86,7 @@ Pour un lancement simple sous Windows, utilisez `run_rncp_listing.cmd`.
 
 Ce tunnel :
 - scrape les résultats CPF pour chaque code RNCP fourni,
+- enchaîne automatiquement 2 modes pour chaque code : `présentiel` (Paris, distance non bornée) puis `distanciel`,
 - agrège en mémoire par organisme (une seule ligne par organisme),
 - déduplique les codes RNCP par organisme,
 - exporte un CSV dans `EXPORT_DIR` (par défaut `exports/`).

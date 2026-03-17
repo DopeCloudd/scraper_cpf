@@ -41,6 +41,11 @@ type CardItem = {
   locationText?: string;
 };
 
+type SearchVariant = {
+  name: "presentiel-paris" | "distanciel";
+  payload: JsonRecord;
+};
+
 const RESULTS_BASE_URL =
   "https://www.moncompteformation.gouv.fr/espace-prive/html/#/formation/recherche/resultats?q=";
 const DETAIL_BASE_URL =
@@ -55,6 +60,17 @@ const DEFAULT_RNCP_CODES = [
   "RNCP38037",
   "RNCP41239",
 ];
+
+const PARIS_CITY = {
+  nom: "PARIS",
+  codePostal: "75000",
+  codeInsee: "75056",
+  coordonnee: {
+    longitude: 2.342562,
+    latitude: 48.85653,
+  },
+  eligibleCpf: true,
+};
 
 const parseCsvLikeValues = (rawValues: string[]): string[] =>
   rawValues
@@ -181,10 +197,7 @@ const showHelp = () => {
   console.log(`Usage: npm run rncp:listing -- [options]\n\nOptions:\n  -c, --codes <code...>        Codes RNCP cibles (ex: RNCP37121 RNCP37948).\n                               Accepte espaces ou virgules.\n  --max-pages-per-code <n>     Limite de pagination par code RNCP.\n  --no-details                 N'ouvre pas les fiches détail (plus rapide, moins d'infos).\n  --output <path>              Chemin de sortie CSV.\n  -h, --help                   Affiche cette aide\n\nVariables d'environnement:\n  RNCP_CODES=RNCP37121,RNCP37948\n\nPar défaut (si aucun code fourni), les codes suivants sont utilisés:\n  ${DEFAULT_RNCP_CODES.join(", ")}`);
 };
 
-const buildSearchPayloadForRncp = (rncpCode: string): JsonRecord => ({
-  ou: {
-    type: "CP",
-  },
+const buildCommonPayloadForRncp = (rncpCode: string): JsonRecord => ({
   debutPagination: 1,
   nombreOccurences: 10,
   contexteFormation: "ACTIVITE_PROFESSIONNELLE",
@@ -200,10 +213,45 @@ const buildSearchPayloadForRncp = (rncpCode: string): JsonRecord => ({
   onlyWithAbondementsEligibles: null,
   durationHours: null,
   certifications: null,
-  distance: null,
-  quoi: rncpCode,
-  quoiReferentiel: null,
+  quoi: null,
+  quoiReferentiel: {
+    code: rncpCode,
+    libelle: rncpCode,
+    type: "CERTIFICATION",
+    publics: ["GD_PUBLIC"],
+  },
 });
+
+const buildSearchVariantsForRncp = (rncpCode: string): SearchVariant[] => {
+  const common = buildCommonPayloadForRncp(rncpCode);
+
+  return [
+    {
+      name: "presentiel-paris",
+      payload: {
+        ...common,
+        ou: {
+          modality: "EN_CENTRE_MIXTE",
+          type: "CP",
+          ville: PARIS_CITY,
+        },
+        // Distance volontairement non bornée.
+        distance: null,
+      },
+    },
+    {
+      name: "distanciel",
+      payload: {
+        ...common,
+        ou: {
+          modality: "A_DISTANCE",
+          type: "CP",
+        },
+        distance: null,
+      },
+    },
+  ];
+};
 
 const buildSearchUrl = (payload: JsonRecord): string => {
   const json = JSON.stringify(payload);
@@ -645,77 +693,94 @@ const scrapeRncpCode = async (
   organizations: Map<string, OrganizationAggregate>,
   maxPagesPerCode: number
 ): Promise<void> => {
-  const page = await browser.newPage();
-  await setupPage(page);
+  const variants = buildSearchVariantsForRncp(rncpCode);
+  let totalMatchedForCode = 0;
 
-  try {
-    const payload = buildSearchPayloadForRncp(rncpCode);
-    const url = buildSearchUrl(payload);
+  for (const variant of variants) {
+    const page = await browser.newPage();
+    await setupPage(page);
 
-    logger.info("RNCP listing: extraction %s", rncpCode);
+    try {
+      const url = buildSearchUrl(variant.payload);
 
-    await page.goto(url, {
-      waitUntil: "networkidle2",
-      timeout: appConfig.navigationTimeoutMs,
-    });
+      logger.info(
+        "RNCP listing: extraction %s (%s)",
+        rncpCode,
+        variant.name
+      );
 
-    await waitForResults(page);
-    await page.waitForTimeout(
-      Math.ceil(randomBetween(appConfig.minWaitMs, appConfig.maxWaitMs))
-    );
+      await page.goto(url, {
+        waitUntil: "networkidle2",
+        timeout: appConfig.navigationTimeoutMs,
+      });
 
-    const processedKeys = new Set<string>();
-    let prevCount = 0;
-    let pageIndex = 0;
-    let matchedForCode = 0;
+      await waitForResults(page);
+      await page.waitForTimeout(
+        Math.ceil(randomBetween(appConfig.minWaitMs, appConfig.maxWaitMs))
+      );
 
-    while (pageIndex < maxPagesPerCode) {
-      const rawNewItems = await extractNewBatch(page, prevCount, 10);
+      const processedKeys = new Set<string>();
+      let prevCount = 0;
+      let pageIndex = 0;
+      let matchedForVariant = 0;
 
-      if (rawNewItems.length === 0) {
-        const clicked = await clickLoadMoreIfPresent(page, prevCount);
-        if (!clicked) break;
+      while (pageIndex < maxPagesPerCode) {
+        const rawNewItems = await extractNewBatch(page, prevCount, 10);
 
-        const retriedItems = await extractNewBatch(page, prevCount, 10);
-        if (retriedItems.length === 0) break;
+        if (rawNewItems.length === 0) {
+          const clicked = await clickLoadMoreIfPresent(page, prevCount);
+          if (!clicked) break;
 
-        for (const item of retriedItems) {
+          const retriedItems = await extractNewBatch(page, prevCount, 10);
+          if (retriedItems.length === 0) break;
+
+          for (const item of retriedItems) {
+            const key = `${item.centerName ?? ""}|${item.detailUrl ?? ""}`;
+            if (!key.trim() || processedKeys.has(key)) continue;
+            processedKeys.add(key);
+            upsertOrganization(organizations, rncpCode, item);
+            matchedForVariant += 1;
+          }
+
+          prevCount += retriedItems.length;
+          pageIndex += 1;
+          continue;
+        }
+
+        for (const item of rawNewItems) {
           const key = `${item.centerName ?? ""}|${item.detailUrl ?? ""}`;
           if (!key.trim() || processedKeys.has(key)) continue;
           processedKeys.add(key);
           upsertOrganization(organizations, rncpCode, item);
-          matchedForCode += 1;
+          matchedForVariant += 1;
         }
 
-        prevCount += retriedItems.length;
+        prevCount += rawNewItems.length;
         pageIndex += 1;
-        continue;
+
+        const clicked = await clickLoadMoreIfPresent(page, prevCount);
+        if (!clicked) break;
       }
 
-      for (const item of rawNewItems) {
-        const key = `${item.centerName ?? ""}|${item.detailUrl ?? ""}`;
-        if (!key.trim() || processedKeys.has(key)) continue;
-        processedKeys.add(key);
-        upsertOrganization(organizations, rncpCode, item);
-        matchedForCode += 1;
-      }
+      totalMatchedForCode += matchedForVariant;
 
-      prevCount += rawNewItems.length;
-      pageIndex += 1;
-
-      const clicked = await clickLoadMoreIfPresent(page, prevCount);
-      if (!clicked) break;
+      logger.info(
+        "RNCP listing: %s (%s) terminé (%d formation(s) lue(s))",
+        rncpCode,
+        variant.name,
+        matchedForVariant
+      );
+    } finally {
+      page.removeAllListeners("request");
+      await page.close().catch(() => undefined);
     }
-
-    logger.info(
-      "RNCP listing: %s terminé (%d formation(s) lue(s))",
-      rncpCode,
-      matchedForCode
-    );
-  } finally {
-    page.removeAllListeners("request");
-    await page.close().catch(() => undefined);
   }
+
+  logger.info(
+    "RNCP listing: %s terminé (%d formation(s) lue(s), tous modes)",
+    rncpCode,
+    totalMatchedForCode
+  );
 };
 
 export const runRncpListing = async (options: CliOptions): Promise<string> => {
