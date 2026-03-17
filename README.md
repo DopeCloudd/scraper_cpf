@@ -48,6 +48,12 @@ OPENDATA_RETRIES=2              # tentatives avant abandon
   - Sans option, toutes les requêtes de `searchQueries.ts` sont traitées.
 - `npm run enrich` : visite les fiches en attente pour récupérer les détails (contacts, description HTML, etc.). Aucune option.
 - `npm run sync:opendata` : synchronise les données centres depuis l'open data. Aucune option.
+- `npm run rncp:listing -- [options]` : génère un fichier CSV agrégé par organisme pour une liste de codes RNCP, sans écrire en base.
+  - `-c, --codes <code...>` ou `--codes=RNCP37121,RNCP37948` : codes RNCP à cibler.
+  - `--max-pages-per-code <n>` : limite de pagination par code.
+  - `--no-details` : n'ouvre pas les fiches de détail (plus rapide, moins d'infos organisme).
+  - `--output <path>` : chemin du fichier CSV de sortie.
+  - Sans option, utilise la liste RNCP par défaut du script.
 - `npm run export -- [options]` : génère un ou plusieurs fichiers Excel dans `EXPORT_DIR`.
   - `--centers-only` / `--centres-only` : n'exporte que les centres (pas l'onglet Formations).
   - `--clean` ou `--clean-list` : limite aux centres « propres » (SIREN/SIRET/email valides + téléphone ou site).
@@ -73,3 +79,13 @@ OPENDATA_RETRIES=2              # tentatives avant abandon
 5. `npm run sync:opendata` pour actualiser les fiches centres avec les données publiques.
 
 Les logs sont écrits en console et dans `logs/` (via Winston). Ajuster `LOG_LEVEL` selon les besoins.
+
+## Utilitaire RNCP (sans base)
+
+Pour un lancement simple sous Windows, utilisez `run_rncp_listing.cmd`.
+
+Ce tunnel :
+- scrape les résultats CPF pour chaque code RNCP fourni,
+- agrège en mémoire par organisme (une seule ligne par organisme),
+- déduplique les codes RNCP par organisme,
+- exporte un CSV dans `EXPORT_DIR` (par défaut `exports/`).

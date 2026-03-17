@@ -15,7 +15,8 @@
     "prisma:migrate": "prisma migrate dev",
     "enrich": "ts-node src/enrich/index.ts",
     "sync:opendata": "ts-node src/sync/opendata.ts",
-    "export": "ts-node src/export/index.ts"
+    "export": "ts-node src/export/index.ts",
+    "rncp:listing": "ts-node src/rncp-listing/index.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.16.2",
