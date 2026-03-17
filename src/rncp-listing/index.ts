@@ -708,6 +708,7 @@ const scrapeRncpCode = async (
         rncpCode,
         variant.name
       );
+      logger.info("RNCP listing: navigation recherche %s (%s)", rncpCode, variant.name);
 
       await page.goto(url, {
         waitUntil: "networkidle2",
@@ -715,6 +716,7 @@ const scrapeRncpCode = async (
       });
 
       await waitForResults(page);
+      logger.info("RNCP listing: résultats détectés %s (%s)", rncpCode, variant.name);
       await page.waitForTimeout(
         Math.ceil(randomBetween(appConfig.minWaitMs, appConfig.maxWaitMs))
       );
@@ -730,6 +732,12 @@ const scrapeRncpCode = async (
         if (rawNewItems.length === 0) {
           const clicked = await clickLoadMoreIfPresent(page, prevCount);
           if (!clicked) break;
+          logger.info(
+            "RNCP listing: pagination suivante %s (%s), déjà %d carte(s)",
+            rncpCode,
+            variant.name,
+            prevCount
+          );
 
           const retriedItems = await extractNewBatch(page, prevCount, 10);
           if (retriedItems.length === 0) break;
@@ -757,9 +765,22 @@ const scrapeRncpCode = async (
 
         prevCount += rawNewItems.length;
         pageIndex += 1;
+        logger.info(
+          "RNCP listing: %s (%s) lot %d traité, cumul %d formation(s)",
+          rncpCode,
+          variant.name,
+          pageIndex,
+          matchedForVariant
+        );
 
         const clicked = await clickLoadMoreIfPresent(page, prevCount);
         if (!clicked) break;
+        logger.info(
+          "RNCP listing: pagination suivante %s (%s), déjà %d carte(s)",
+          rncpCode,
+          variant.name,
+          prevCount
+        );
       }
 
       totalMatchedForCode += matchedForVariant;
@@ -815,10 +836,13 @@ export const runRncpListing = async (options: CliOptions): Promise<string> => {
         "RNCP listing: enrichissement des infos organisme (%d ligne(s))",
         rows.length
       );
+      logger.info("RNCP listing: ouverture des fiches détail en cours...");
       await enrichOrganizationsWithDetail(browser, rows);
+      logger.info("RNCP listing: enrichissement détail terminé");
     }
 
     const outputPath = options.outputFile?.trim() || defaultOutputPath();
+    logger.info("RNCP listing: génération du CSV...");
     await writeCsv(outputPath, rows);
 
     logger.info(

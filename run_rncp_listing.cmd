@@ -26,6 +26,7 @@ SET "RNCP_CODES=RNCP37948,RNCP37121,RNCP37949,RNCP37123,RNCP41366,RNCP38037,RNCP
 
 REM Log startup
 echo [%DATE% %TIME%] Démarrage listing RNCP CPF >> log.txt
+echo [%DATE% %TIME%] Démarrage listing RNCP CPF
 
-REM Run the RNCP listing and append output to the log
-"%NODE_PATH%\npm.cmd" run rncp:listing -- --codes "%RNCP_CODES%" >> log.txt 2>&1
+REM Run the RNCP listing with live console logs
+"%NODE_PATH%\npm.cmd" run rncp:listing -- --codes "%RNCP_CODES%"
