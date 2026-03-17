@@ -3,6 +3,11 @@ import fs from "fs/promises";
 import path from "path";
 import type { Browser, Page } from "puppeteer";
 import { appConfig } from "../config/appConfig";
+import {
+  cleanOrganizations,
+  enrichOrganizationsWithOpenData,
+  type ListingOrganization,
+} from "./postProcess";
 import { createBrowser } from "../scraper/browser";
 import { normalizeCenterName } from "../utils/center";
 import { humanDelay, randomBetween } from "../utils/humanizer";
@@ -19,21 +24,7 @@ interface CliOptions {
   help: boolean;
 }
 
-type OrganizationAggregate = {
-  key: string;
-  name: string;
-  rncpCodes: Set<string>;
-  cities: Set<string>;
-  postalCodes: Set<string>;
-  regions: Set<string>;
-  countries: Set<string>;
-  trainingCount: number;
-  detailUrl?: string;
-  email?: string;
-  phone?: string;
-  website?: string;
-  address?: string;
-};
+type OrganizationAggregate = ListingOrganization;
 
 type CardItem = {
   centerName?: string;
@@ -520,11 +511,25 @@ const parseDetailContacts = async (
       }
 
       let website: string | undefined;
-      const websiteAnchor = document.querySelector(
-        'a[href^="http"]'
-      ) as HTMLAnchorElement | null;
-      if (websiteAnchor?.href) {
-        website = websiteAnchor.href.trim();
+      const headings = Array.from(document.querySelectorAll("h3"));
+      const siteHeading = headings.find((heading) =>
+        heading.textContent?.toLowerCase().includes("site internet")
+      );
+      if (siteHeading) {
+        const next = siteHeading.nextElementSibling as HTMLElement | null;
+        if (next?.tagName === "A") {
+          const websiteAnchor = next as HTMLAnchorElement;
+          if (websiteAnchor.href) {
+            website = websiteAnchor.href.trim();
+          }
+        } else {
+          const anchorInside = next?.querySelector(
+            'a[href^="http"]'
+          ) as HTMLAnchorElement | null;
+          if (anchorInside?.href) {
+            website = anchorInside.href.trim();
+          }
+        }
       }
 
       const address = cleanText(
@@ -634,20 +639,16 @@ const writeCsv = async (
   organizations: OrganizationAggregate[]
 ): Promise<void> => {
   const headers = [
-    "organisme_nom",
-    "organisme_cle",
-    "organisme_villes",
-    "organisme_codes_postaux",
-    "organisme_regions",
-    "organisme_pays",
-    "organisme_email",
-    "organisme_telephone",
-    "organisme_site",
-    "organisme_adresse",
-    "rncp_codes",
-    "rncp_codes_count",
-    "formations_count",
-    "formation_detail_url_exemple",
+    "siren",
+    "siret",
+    "nom_organisme",
+    "adresse",
+    "code_postal",
+    "ville",
+    "email",
+    "telephone",
+    "website",
+    "codes_rncp",
   ];
 
   const lines = [headers.map(csvEscape).join(";")];
@@ -663,20 +664,16 @@ const writeCsv = async (
 
     lines.push(
       [
+        org.siren ?? "",
+        org.siret ?? "",
         org.name,
-        org.key,
-        joinSet(org.cities),
+        org.address ?? "",
         joinSet(org.postalCodes),
-        joinSet(org.regions),
-        joinSet(org.countries),
+        joinSet(org.cities),
         org.email ?? "",
         org.phone ?? "",
         org.website ?? "",
-        org.address ?? "",
         rncpCodes.join(" | "),
-        rncpCodes.length,
-        org.trainingCount,
-        org.detailUrl ?? "",
       ]
         .map(csvEscape)
         .join(";")
@@ -829,7 +826,9 @@ export const runRncpListing = async (options: CliOptions): Promise<string> => {
       await humanDelay(randomBetween(1500, 3500));
     }
 
-    const rows = Array.from(organizations.values());
+    let rows = Array.from(organizations.values());
+    rows = cleanOrganizations(rows);
+    await enrichOrganizationsWithOpenData(rows);
 
     if (options.fetchDetails && rows.length > 0) {
       logger.info(

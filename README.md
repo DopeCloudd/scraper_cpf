@@ -88,5 +88,6 @@ Ce tunnel :
 - scrape les résultats CPF pour chaque code RNCP fourni,
 - enchaîne automatiquement 2 modes pour chaque code : `présentiel` (Paris, distance non bornée) puis `distanciel`,
 - agrège en mémoire par organisme (une seule ligne par organisme),
-- déduplique les codes RNCP par organisme,
+- nettoie les lignes bruitées (ex: organisme `ND`) puis déduplique les codes RNCP par organisme,
+- enrichit ensuite les organismes avec les données OpenDataSoft (SIREN/SIRET quand disponibles),
 - exporte un CSV dans `EXPORT_DIR` (par défaut `exports/`).
